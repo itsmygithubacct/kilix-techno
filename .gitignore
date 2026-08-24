@@ -1,0 +1,9 @@
+/build/
+*.ktech
+*.wav
+*.tmp
+*.d
+*.o
+*.a
+*.so
+core
