@@ -21,11 +21,19 @@ application lock. `pcm-mixer` alone owns audio-sink process and transport
 policy. A no-sink start is a visible, editable state rather than an error that
 closes the application.
 
-Saving and export take value snapshots. Project encoding and decoding complete
-against temporary objects before publication. Files are written to private
-sibling temporaries, synchronized, and atomically renamed. Offline export uses
-an independent sequencer and DSP state, so it cannot move or perturb live
-playback.
+Saving and export take value snapshots. Project and settings encoding and
+decoding complete against temporary objects before publication. Files are
+written to private sibling temporaries, synchronized, and atomically renamed.
+Offline export runs on a cancellable worker with an independent sequencer and
+DSP state, so it cannot move or perturb live playback. Completion crosses one
+release/acquire atomic flag before the UI reads the worker result.
+
+The XDG state directory contains `settings.state` and `autosave.state` CRC
+records. Settings persist semantic key and any-gamepad bindings, not device
+numbers or command strings. Corrupt settings remain untouched. A corrupt
+autosave is quarantined to a fixed diagnostic sibling without replacement; if
+that name is occupied, automatic writes remain disabled until the user makes
+an explicit save decision.
 
 Both UI paths consume the same semantic action and view model. The preferred
 path composes pixels through `soft-raster` and presents through
