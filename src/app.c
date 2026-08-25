@@ -456,6 +456,12 @@ static void handle_pixel_event(app_state *app, const ktech_cli_options *cli,
             if (ktech_ui_hit_step(&layout, x, y, &track, &step) &&
                 ktech_editor_select_step(app->editor, track, step, true)) {
                 request_publication(app, false);
+            } else {
+                uint8_t scene;
+                if (ktech_ui_hit_scene(&layout, x, y, &scene) &&
+                    ktech_editor_select_scene(app->editor, scene))
+                    set_message(app,
+                                "Scene selected; press L to launch it");
             }
         }
     } else if (event->kind == KITTYIN_EVENT_FOCUS &&

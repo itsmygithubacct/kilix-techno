@@ -39,6 +39,10 @@ build/kilix-techno --export "$PWD/set.ktech" "$PWD/set.wav" --bars 8
 
 ## Controls
 
+- The grid groups steps into four-step beats. Filled height represents
+  velocity, the bright top edge represents probability, and dots identify
+  extra ratchets. Instrument families retain distinct colors while the
+  playhead and edit cursor use separate outlines.
 - Left/right move the step cursor; up/down choose the editable field; `Tab`
   changes the selected track. The instrument field selects any native or
   curated voice. A missing optional voice plays its corresponding native synth
@@ -53,6 +57,9 @@ build/kilix-techno --export "$PWD/set.ktech" "$PWD/set.wav" --bars 8
 - `,` and `>` choose a scene; `L` launches it at the project's selected
   step, beat, or four-beat boundary.
 - `Q` requests quit and asks again when the project has unsaved changes.
+- Mouse clicks toggle grid steps or select scenes, and the wheel edits the
+  focused value. Scene selection is intentionally separate from `L` launch so
+  a click cannot interrupt a live set.
 
 The status line always reports the selected audio backend or the usable
 no-audio state and the installed-bank count. Project editing and export do not

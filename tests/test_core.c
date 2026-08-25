@@ -506,13 +506,17 @@ static void test_editor_history(void)
     (void)ktech_editor_apply(editor, KTECH_ACTION_NEXT_SCENE,
                              KITTYIN_ACTION_PRESS);
     CHECK(ktech_editor_scene(editor) == 1u);
+    CHECK(ktech_editor_select_scene(editor, 5u));
+    CHECK(ktech_editor_scene(editor) == 5u);
+    CHECK(!ktech_editor_select_scene(editor, 5u));
+    CHECK(!ktech_editor_select_scene(editor, KTECH_SCENE_COUNT));
     (void)ktech_editor_apply(editor, KTECH_ACTION_LAUNCH_SCENE,
                              KITTYIN_ACTION_PRESS);
-    CHECK(ktech_editor_project(editor)->active_scene == 1u);
+    CHECK(ktech_editor_project(editor)->active_scene == 5u);
     (void)ktech_editor_apply(editor, KTECH_ACTION_UNDO,
                              KITTYIN_ACTION_PRESS);
-    CHECK(ktech_editor_project(editor)->active_scene == 1u);
-    CHECK(ktech_editor_scene(editor) == 1u);
+    CHECK(ktech_editor_project(editor)->active_scene == 5u);
+    CHECK(ktech_editor_scene(editor) == 5u);
     ktech_editor_free(editor);
 }
 
@@ -804,6 +808,14 @@ static void test_ui_models(void)
                                 &track, &step));
         CHECK(track == 0u && step == 0u);
         CHECK(!ktech_ui_hit_step(&layout, 0, 0, &track, &step));
+        uint8_t scene_number;
+        int scene_button = layout.scene_width / (int)KTECH_SCENE_COUNT;
+        CHECK(ktech_ui_hit_scene(&layout,
+                                 layout.scene_x + scene_button * 7 + 2,
+                                 layout.scene_y + layout.scene_height / 2,
+                                 &scene_number));
+        CHECK(scene_number == 7u);
+        CHECK(!ktech_ui_hit_scene(&layout, 0, 0, &scene_number));
     }
     sr_canvas_free(&canvas);
 
@@ -830,7 +842,11 @@ static void test_ui_models(void)
                                       &status, "ready");
     CHECK(needed < sizeof cells);
     CHECK(strstr(cells, "KILIX TECHNO") != NULL);
-    CHECK(strstr(cells, "[|") != NULL || strstr(cells, "[x]") != NULL);
+    CHECK(strstr(cells, "[|") != NULL || strstr(cells, "[X]") != NULL ||
+          strstr(cells, "[.]") != NULL);
+    CHECK(strstr(cells, "EDIT ") != NULL);
+    CHECK(strstr(cells, "CHANCE") != NULL);
+    CHECK(strstr(cells, "BANKS 0/6 AVAILABLE") != NULL);
     CHECK(strstr(cells, "STATUS ready") != NULL);
     char tiny[8];
     CHECK(ktech_cell_render(tiny, sizeof tiny, 40, editor, &status, NULL) >

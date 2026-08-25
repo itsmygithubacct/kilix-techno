@@ -344,6 +344,16 @@ bool ktech_editor_select_step(ktech_editor *editor, uint8_t track,
     return true;
 }
 
+bool ktech_editor_select_scene(ktech_editor *editor, uint8_t scene)
+{
+    if (!editor || scene >= KTECH_SCENE_COUNT || editor->scene == scene)
+        return false;
+    editor->scene = scene;
+    if (editor->step >= selected_track(editor)->length)
+        editor->step = (uint8_t)(selected_track(editor)->length - 1u);
+    return true;
+}
+
 void ktech_editor_mark_saved(ktech_editor *editor)
 {
     if (!editor) return;

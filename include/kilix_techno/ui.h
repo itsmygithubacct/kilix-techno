@@ -23,6 +23,8 @@ typedef struct ktech_ui_layout {
     int page_start;
     int track_start;
     int track_rows;
+    int scene_x;
+    int scene_width;
     int scene_y;
     int scene_height;
 } ktech_ui_layout;
@@ -33,6 +35,8 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
                      const ktech_audio_status *audio, const char *message);
 bool ktech_ui_hit_step(const ktech_ui_layout *layout, int x, int y,
                        uint8_t *track, uint8_t *step);
+bool ktech_ui_hit_scene(const ktech_ui_layout *layout, int x, int y,
+                        uint8_t *scene);
 
 /* Write a complete compact, color-independent cell view. Returns the bytes
  * that would be required, excluding the terminator. */
