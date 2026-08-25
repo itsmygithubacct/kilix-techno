@@ -36,7 +36,13 @@ static const uint8_t allowed_lengths[] = {
 };
 
 static const uint8_t role_default_notes[KTECH_ROLE_COUNT] = {
-    36u, 38u, 39u, 42u, 46u, 48u, 36u, 60u, 60u
+    36u, 38u, 39u, 42u, 46u, 48u, 36u, 60u, 60u,
+    36u, 38u, 39u, 42u, 46u, 48u,
+    36u, 38u, 42u, 46u, 48u, 33u,
+    36u, 48u,
+    60u, 60u, 60u, 60u, 48u, 60u,
+    45u, 60u, 53u, 43u,
+    60u, 60u, 48u, 60u
 };
 
 #define KEY_BIND(action_value, key_value, modifier_value) \
@@ -187,10 +193,66 @@ const char *ktech_role_name(ktech_role role)
 {
     static const char *const names[KTECH_ROLE_COUNT] = {
         "Kick", "Snare", "Clap", "Closed Hat", "Open Hat", "Percussion",
-        "Bass", "Chord Stab", "Texture"
+        "Bass", "Chord Stab", "Texture",
+        "808 Kick", "808 Snare", "808 Clap", "808 Closed Hat",
+        "808 Open Hat", "808 Cowbell",
+        "Stargate Kick", "Stargate Snare", "Stargate Closed Hat",
+        "Stargate Open Hat", "Stargate FM Perc", "Stargate Sub",
+        "Forge Growl", "Forge House Stab",
+        "Mech Pluck Bass", "Mech Fuzz Bass", "Mech Wobble",
+        "Mech Time Pad", "Mech Industrial Hit", "Mech Glitch Vox",
+        "Karoryfer A2", "Karoryfer C4", "Karoryfer F3", "Karoryfer G2",
+        "VCSL Clavisynth", "VCSL FM Piano", "VCSL Brake Drum",
+        "VCSL Ocean Drum"
     };
 
     return role < KTECH_ROLE_COUNT ? names[role] : "Unknown";
+}
+
+ktech_role ktech_role_fallback(ktech_role role)
+{
+    if (role < KTECH_NATIVE_ROLE_COUNT) return role;
+    switch (role) {
+    case KTECH_ROLE_TIDAL_KICK:
+    case KTECH_ROLE_STARGATE_KICK:
+        return KTECH_ROLE_KICK;
+    case KTECH_ROLE_TIDAL_SNARE:
+    case KTECH_ROLE_STARGATE_SNARE:
+        return KTECH_ROLE_SNARE;
+    case KTECH_ROLE_TIDAL_CLAP:
+        return KTECH_ROLE_CLAP;
+    case KTECH_ROLE_TIDAL_CLOSED_HAT:
+    case KTECH_ROLE_STARGATE_CLOSED_HAT:
+        return KTECH_ROLE_CLOSED_HAT;
+    case KTECH_ROLE_TIDAL_OPEN_HAT:
+    case KTECH_ROLE_STARGATE_OPEN_HAT:
+        return KTECH_ROLE_OPEN_HAT;
+    case KTECH_ROLE_TIDAL_COWBELL:
+    case KTECH_ROLE_STARGATE_FM_PERC:
+    case KTECH_ROLE_MECH_INDUSTRIAL_HIT:
+    case KTECH_ROLE_VCSL_BRAKE_DRUM:
+        return KTECH_ROLE_PERCUSSION;
+    case KTECH_ROLE_STARGATE_SUB:
+    case KTECH_ROLE_FORGE_GROWL:
+    case KTECH_ROLE_MECH_PLUCK_BASS:
+    case KTECH_ROLE_MECH_FUZZ_BASS:
+    case KTECH_ROLE_MECH_WOBBLE:
+    case KTECH_ROLE_KARORYFER_A2:
+    case KTECH_ROLE_KARORYFER_F3:
+    case KTECH_ROLE_KARORYFER_G2:
+        return KTECH_ROLE_BASS;
+    case KTECH_ROLE_FORGE_HOUSE_STAB:
+    case KTECH_ROLE_KARORYFER_C4:
+    case KTECH_ROLE_VCSL_CLAVISYNTH:
+    case KTECH_ROLE_VCSL_FM_PIANO:
+        return KTECH_ROLE_CHORD;
+    case KTECH_ROLE_MECH_TIME_PAD:
+    case KTECH_ROLE_MECH_GLITCH_VOX:
+    case KTECH_ROLE_VCSL_OCEAN_DRUM:
+        return KTECH_ROLE_TEXTURE;
+    default:
+        return KTECH_ROLE_TEXTURE;
+    }
 }
 
 static ktech_step default_step(uint8_t note)
@@ -219,7 +281,17 @@ void ktech_project_init(ktech_project *project, uint32_t seed)
     for (uint8_t scene = 0u; scene < KTECH_SCENE_COUNT; ++scene) {
         for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
             ktech_track *current = &project->scenes[scene].tracks[track];
-            current->role = track;
+            static const uint8_t instruments[KTECH_TRACK_COUNT] = {
+                KTECH_ROLE_TIDAL_KICK,
+                KTECH_ROLE_STARGATE_SNARE,
+                KTECH_ROLE_TIDAL_CLAP,
+                KTECH_ROLE_TIDAL_CLOSED_HAT,
+                KTECH_ROLE_STARGATE_OPEN_HAT,
+                KTECH_ROLE_VCSL_BRAKE_DRUM,
+                KTECH_ROLE_MECH_FUZZ_BASS,
+                KTECH_ROLE_FORGE_HOUSE_STAB
+            };
+            current->role = instruments[track];
             current->length = track == 6u ? 16u :
                               track == 7u ? 12u : 16u;
             current->level = track < 6u ? 86u : 76u;
@@ -521,7 +593,7 @@ ktech_project_result ktech_project_encode(const ktech_project *project,
 }
 
 static bool read_header(kilixstate_reader *reader, ktech_project *project,
-                        uint32_t *stored_crc)
+                        uint32_t *stored_crc, uint16_t *schema_out)
 {
     uint8_t magic[8];
     uint16_t header_size, schema;
@@ -551,10 +623,11 @@ static bool read_header(kilixstate_reader *reader, ktech_project *project,
     if (memcmp(magic, project_magic, sizeof magic) != 0 ||
         header_size != PROJECT_HEADER_SIZE || total != reader->size)
         return false;
-    if (schema != KTECH_PROJECT_SCHEMA) {
+    if (schema != 1u && schema != KTECH_PROJECT_SCHEMA) {
         reader->result = KILIXSTATE_CODEC_UNKNOWN_VERSION;
         return false;
     }
+    *schema_out = schema;
     for (size_t index = 0u; index < sizeof reserved; ++index)
         if (reserved[index] != 0u) {
             reader->result = KILIXSTATE_CODEC_NONCANONICAL;
@@ -563,7 +636,8 @@ static bool read_header(kilixstate_reader *reader, ktech_project *project,
     return true;
 }
 
-static bool read_payload(kilixstate_reader *reader, ktech_project *project)
+static bool read_payload(kilixstate_reader *reader, ktech_project *project,
+                         uint16_t schema)
 {
     for (uint8_t scene = 0u; scene < KTECH_SCENE_COUNT; ++scene) {
         for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
@@ -580,7 +654,8 @@ static bool read_payload(kilixstate_reader *reader, ktech_project *project)
                 return false;
             current->mute = mute ? 1u : 0u;
             current->solo = solo ? 1u : 0u;
-            if (reserved[0] != 0u || reserved[1] != 0u) {
+            if ((schema == 1u && current->role >= KTECH_NATIVE_ROLE_COUNT) ||
+                reserved[0] != 0u || reserved[1] != 0u) {
                 reader->result = KILIXSTATE_CODEC_NONCANONICAL;
                 return false;
             }
@@ -641,7 +716,8 @@ ktech_project_result ktech_project_decode(ktech_project *project,
     kilixstate_reader reader;
     kilixstate_reader_init(&reader, bytes, size);
     uint32_t stored_crc;
-    if (!read_header(&reader, &temporary, &stored_crc)) {
+    uint16_t schema;
+    if (!read_header(&reader, &temporary, &stored_crc, &schema)) {
         return kilixstate_reader_result(&reader) ==
                        KILIXSTATE_CODEC_UNKNOWN_VERSION
                    ? KTECH_PROJECT_UNKNOWN_VERSION
@@ -651,7 +727,7 @@ ktech_project_result ktech_project_decode(ktech_project *project,
     if (kilixstate_crc32(raw + PROJECT_HEADER_SIZE,
                          size - PROJECT_HEADER_SIZE) != stored_crc)
         return KTECH_PROJECT_CORRUPT;
-    if (!read_payload(&reader, &temporary)) {
+    if (!read_payload(&reader, &temporary, schema)) {
         return kilixstate_reader_result(&reader) ==
                        KILIXSTATE_CODEC_TRUNCATED
                    ? KTECH_PROJECT_TRUNCATED

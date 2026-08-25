@@ -33,6 +33,7 @@ typedef struct ktech_audio_status {
     uint16_t peak_left;
     uint16_t peak_right;
     uint8_t scene;
+    uint8_t soundbank_count;
     bool audible;
     bool offline;
     bool pending;

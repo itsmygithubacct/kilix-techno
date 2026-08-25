@@ -34,7 +34,7 @@ DEPENDENCY_LIBS := \
 	$(RASTER_DIR)/$(BUILD_DIR)/libsoft-raster.a \
 	$(STATE_DIR)/$(BUILD_DIR)/libkilix-state.a
 
-CORE_SOURCES := src/project.c src/compile.c src/actions.c src/settings.c \
+CORE_SOURCES := src/project.c src/soundbank.c src/compile.c src/actions.c src/settings.c \
 	src/dsp.c src/export.c src/audio.c src/ui.c src/cell_ui.c
 CORE_OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(CORE_SOURCES))
 CORE_DEPS := $(CORE_OBJECTS:.o=.d)
@@ -122,7 +122,7 @@ install: all
 	$(INSTALL) -m 0644 LICENSE THIRD_PARTY.md \
 		$(DESTDIR)$(PREFIX)/share/licenses/$(PROJECT)/
 	$(INSTALL) -m 0644 README.md docs/ARCHITECTURE.md \
-		docs/PROJECT-FORMAT.md docs/PROVENANCE.md \
+		docs/PROJECT-FORMAT.md docs/PROVENANCE.md docs/SOUNDBANKS.md \
 		$(DESTDIR)$(PREFIX)/share/doc/$(PROJECT)/
 
 clean:

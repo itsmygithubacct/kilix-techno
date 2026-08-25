@@ -178,8 +178,9 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
     const ktech_step *step = &track->steps[selected_step];
     char editor_line[256];
     (void)snprintf(editor_line, sizeof editor_line,
-                   "%s  STEP %02u  NOTE %u  VEL %u  GATE %u  PROB %u  x%u  LEN %u  LVL %u  PAN %u  QNT %s  MOTION %s",
+                   "%s  %s  STEP %02u  NOTE %u  VEL %u  GATE %u  PROB %u  x%u  LEN %u  LVL %u  PAN %u  QNT %s  MOTION %s",
                    field_name(ktech_editor_field(editor)),
+                   ktech_role_name((ktech_role)track->role),
                    (unsigned)selected_step + 1u, step->note, step->velocity,
                    step->gate, step->probability, step->ratchet, track->length,
                    track->level, track->pan,
@@ -201,8 +202,10 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
     char status[256];
     const char *backend = audio && audio->backend ? audio->backend : "NO AUDIO";
     (void)snprintf(status, sizeof status,
-                   "%s%s | %u Hz %u ms | QERR %llu SINKERR %llu | arrows move | Enter toggle | +/- edit | Space play | F1 help | Q quit",
+                   "%s%s | BANKS %u/%u | %u Hz %u ms | QERR %llu SINKERR %llu | arrows move | Enter toggle | +/- edit | Space play | F1 help | Q quit",
                    backend, audio && audio->pending ? " | QUEUED" : "",
+                   audio ? audio->soundbank_count : 0u,
+                   KTECH_SAMPLE_BANK_COUNT,
                    audio ? audio->sample_rate : 0u,
                    audio ? audio->latency_ms : 0u,
                    (unsigned long long)(audio ? audio->queue_failures : 0u),

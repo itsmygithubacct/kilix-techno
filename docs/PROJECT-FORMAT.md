@@ -1,7 +1,7 @@
 # Kilix Techno project format
 
 The portable `.ktech` format has MIME type `application/x-kilix-techno`.
-Version 1 is a canonical little-endian binary record with a 1 MiB hard limit.
+The format is a canonical little-endian binary record with a 1 MiB hard limit.
 It contains no pointers, native padding, absolute paths, executable strings,
 plug-ins, environment values, or sink configuration.
 
@@ -27,6 +27,11 @@ Schema migrations are explicit whole-record conversions. A writer emits only
 the current schema after a successful decode or new-project construction.
 Failed, truncated, oversized, noncanonical, or future-schema inputs never
 partially update an open project.
+
+Schema 2 expands the track-role enum from the nine native synth families to
+the fixed curated instrument identifiers documented in `SOUNDBANKS.md`; the
+record layout is unchanged. Schema-1 projects are accepted only with their
+original native-role range and are emitted as schema 2 on the next save.
 
 ## Settings record
 

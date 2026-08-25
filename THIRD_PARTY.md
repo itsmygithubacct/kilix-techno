@@ -21,3 +21,19 @@ The SHA-256 values below identify those license files.
 
 The application requires the system C/POSIX libraries, pthreads, libm, and
 zlib. These are platform facilities rather than bundled source.
+
+## Optional sample data
+
+No sample data is committed or covered by the root MIT license. The Kilix
+launcher can explicitly install checksum-pinned subsets from these sources;
+each installed directory retains a source record, file checksums, and license
+notice.
+
+| Pack | Pinned revision/release | Sample license |
+| --- | --- | --- |
+| TidalCycles TR-808 Fischer | `85fbecf1bec32553395625ea659e2a56dfd7c0e1` | CC0-1.0 |
+| Stargate Sample Pack | `dbfd6ec52d4ed53b60bdbea5fc6adf295127c027` | CC0-1.0 |
+| scoredata-forge outputs | `2ff340297d6e70fe5ce3fee257fcf1abe0ee273d` | CC0-1.0 outputs; MIT generator |
+| MechSounds | `260301` | CC0-1.0 sounds |
+| Karoryfer Cowsynth | `v1.001` | CC0-1.0 |
+| VCSL | `c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e` | CC0-1.0 |

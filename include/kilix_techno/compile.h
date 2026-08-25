@@ -2,6 +2,7 @@
 #define KILIX_TECHNO_COMPILE_H
 
 #include "kilix_techno/project.h"
+#include "kilix_techno/soundbank.h"
 
 #include "chip_sequencer.h"
 
@@ -20,6 +21,9 @@ typedef struct ktech_compiled ktech_compiled;
 ktech_compiled *ktech_compile_scene(const ktech_project *project,
                                     uint8_t scene, char *error,
                                     size_t error_size);
+ktech_compiled *ktech_compile_scene_with_bank(
+    const ktech_project *project, uint8_t scene, const ktech_soundbank *bank,
+    char *error, size_t error_size);
 void ktech_compiled_free(ktech_compiled *compiled);
 const chipseq_song *ktech_compiled_song(const ktech_compiled *compiled);
 uint16_t ktech_compiled_rows(const ktech_compiled *compiled);

@@ -86,8 +86,9 @@ size_t ktech_cell_render(char *output, size_t capacity, int columns,
     const ktech_track *track = &scene->tracks[selected_track];
     const ktech_step *step = &track->steps[selected_step];
     append(&writer,
-           "FOCUS %s | step %u note %u vel %u gate %u prob %u ratchet %u | len %u level %u pan %u | launch %s motion %s\n",
+           "FOCUS %s | inst %s | step %u note %u vel %u gate %u prob %u ratchet %u | len %u level %u pan %u | launch %s motion %s\n",
            field_name(ktech_editor_field(editor)),
+           ktech_role_name((ktech_role)track->role),
            (unsigned)selected_step + 1u, step->note, step->velocity,
            step->gate, step->probability, step->ratchet, track->length,
            track->level, track->pan,
@@ -101,9 +102,11 @@ size_t ktech_cell_render(char *output, size_t capacity, int columns,
         append(&writer, scene_number == scene_index ? "[%u]" : " %u ",
                (unsigned)scene_number + 1u);
     }
-    append(&writer, "\nAUDIO %s%s %uHz/%ums QERR%llu SINKERR%llu | arrows move, Enter toggle, +/- edit, F1 help, Q quit\n",
+    append(&writer, "\nAUDIO %s%s BANKS%u/%u %uHz/%ums QERR%llu SINKERR%llu | arrows move, Enter toggle, +/- edit, F1 help, Q quit\n",
            audio && audio->backend ? audio->backend : "NO AUDIO",
            audio && audio->pending ? " (queued)" : "",
+           audio ? audio->soundbank_count : 0u,
+           KTECH_SAMPLE_BANK_COUNT,
            audio ? audio->sample_rate : 0u,
            audio ? audio->latency_ms : 0u,
            (unsigned long long)(audio ? audio->queue_failures : 0u),

@@ -7,12 +7,22 @@ stereo generator backed by one `chip-sequencer` engine. A compiled song is
 replaced only through the sequencer's row/beat boundary API, and its generation
 acknowledgement is the reclamation fence for the older snapshot.
 
+The control thread loads complete optional soundbank receipts before compiling
+the first scene. Strict canonical mono WAV decoding, integer linear resampling,
+and uniform peak normalization happen there, never in the audio callback. The
+resulting immutable
+PCM allocations outlive every active and pending snapshot. A sample role with
+no valid installed PCM is compiled as its native synth-family fallback. The
+offline exporter builds its own rate-matched bank, so live playback and WAV
+export resolve instruments through the same path.
+
 Each scene has eight tracks. A control-side compiler expands their independent
 allowed loop lengths into a bounded 192-row supercycle, then resolves
 probability and ratchets over a fixed 64-supercycle horizon with a specified
 integer generator. At runtime only the active and pending compiled snapshots
-exist. Track mixer controls are submitted as one gain/pan/mute batch; solo is
-an application policy translated into that batch.
+exist. Track mixer controls are submitted as one gain/pan/mute batch and
+identical batches are coalesced; solo is an application policy translated into
+that batch.
 
 The live callback renders interleaved stereo samples, then applies master level,
 tone, saturating drive, and a bounded tempo delay from preallocated state. It

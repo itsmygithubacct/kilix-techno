@@ -2,6 +2,7 @@
 
 #include "kilix_techno/compile.h"
 #include "kilix_techno/dsp.h"
+#include "kilix_techno/soundbank.h"
 
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -17,12 +18,14 @@ struct ktech_audio {
     ktech_dsp dsp;
     ktech_compiled *active;
     ktech_compiled *pending;
+    ktech_soundbank *soundbank;
     uint32_t generation;
     uint32_t pending_generation;
     uint32_t sample_rate;
     uint32_t latency_ms;
     uint64_t queue_failures;
     pcmmix_stats final_transport;
+    chipseq_channel_mix last_mix;
     atomic_uint tempo;
     atomic_uint level;
     atomic_uint tone;
@@ -41,6 +44,7 @@ struct ktech_audio {
     bool pending_restart;
     bool paused;
     bool stopped;
+    bool mix_valid;
 };
 
 static void set_error(char *error, size_t size, const char *format, ...)
@@ -142,10 +146,15 @@ static bool apply_mix(ktech_audio *audio, const ktech_scene *scene)
         if (source->mute != 0u || (any_solo && source->solo == 0u))
             mix.mute_mask |= (uint8_t)(1u << track);
     }
+    if (audio->mix_valid &&
+        memcmp(&mix, &audio->last_mix, sizeof mix) == 0)
+        return true;
     if (!chipseq_music_set_channel_mix(&audio->sequence, &mix)) {
         ++audio->queue_failures;
         return false;
     }
+    audio->last_mix = mix;
+    audio->mix_valid = true;
     return true;
 }
 
@@ -193,11 +202,16 @@ ktech_audio *ktech_audio_create(const ktech_project *project,
     atomic_init(&audio->delay_amount, project->master_delay);
     atomic_init(&audio->peak_left, 0u);
     atomic_init(&audio->peak_right, 0u);
-    audio->active = ktech_compile_scene(project, audio->scene,
-                                         error, error_size);
+    char bank_warning[160];
+    audio->soundbank = ktech_soundbank_load(options->sample_rate,
+                                             bank_warning,
+                                             sizeof bank_warning);
+    audio->active = ktech_compile_scene_with_bank(
+        project, audio->scene, audio->soundbank, error, error_size);
     if (!audio->active || !ktech_dsp_init(&audio->dsp,
                                            options->sample_rate)) {
         ktech_compiled_free(audio->active);
+        ktech_soundbank_free(audio->soundbank);
         free(audio);
         set_error(error, error_size, "cannot initialize audio renderer");
         return NULL;
@@ -209,6 +223,7 @@ ktech_audio *ktech_audio_create(const ktech_project *project,
     if (!chipseq_init(&audio->sequence, &sequence_options)) {
         ktech_dsp_free(&audio->dsp);
         ktech_compiled_free(audio->active);
+        ktech_soundbank_free(audio->soundbank);
         free(audio);
         set_error(error, error_size, "cannot initialize sequencer");
         return NULL;
@@ -266,8 +281,8 @@ bool ktech_audio_publish(ktech_audio *audio, const ktech_project *project,
                   "invalid audio publication");
         return false;
     }
-    ktech_compiled *candidate = ktech_compile_scene(project, scene,
-                                                     error, error_size);
+    ktech_compiled *candidate = ktech_compile_scene_with_bank(
+        project, scene, audio->soundbank, error, error_size);
     if (!candidate) return false;
     load_dsp_controls(audio, project);
     if (!audio->mixer_live) {
@@ -415,6 +430,8 @@ void ktech_audio_get_status(ktech_audio *audio, ktech_audio_status *status)
     memset(status, 0, sizeof *status);
     if (!audio) return;
     status->scene = audio->scene;
+    status->soundbank_count = ktech_soundbank_installed_count(
+        audio->soundbank);
     status->offline = audio->offline;
     status->pending = audio->pending != NULL;
     status->pending_generation = audio->pending_generation;
@@ -459,6 +476,7 @@ void ktech_audio_free(ktech_audio *audio)
     ktech_dsp_free(&audio->dsp);
     ktech_compiled_free(audio->pending);
     ktech_compiled_free(audio->active);
+    ktech_soundbank_free(audio->soundbank);
     memset(audio, 0, sizeof *audio);
     free(audio);
 }

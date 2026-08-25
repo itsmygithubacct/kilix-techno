@@ -1,6 +1,7 @@
 #include "kilix_techno/compile.h"
 #include "kilix_techno/project.h"
 #include "kilix_techno/settings.h"
+#include "kilix_techno/soundbank.h"
 #include "kilix_techno/actions.h"
 #include "kilix_techno/audio.h"
 #include "kilix_techno/dsp.h"
@@ -38,6 +39,12 @@ static void write_u32(uint8_t *bytes, uint32_t value)
     bytes[3] = (uint8_t)(value >> 24);
 }
 
+static void write_u16(uint8_t *bytes, uint16_t value)
+{
+    bytes[0] = (uint8_t)value;
+    bytes[1] = (uint8_t)(value >> 8);
+}
+
 static void repair_project_crc(uint8_t *bytes, size_t size)
 {
     write_u32(bytes + 16u, kilixstate_crc32(bytes + 40u, size - 40u));
@@ -68,9 +75,24 @@ static void test_project_codec(void)
 
     uint8_t attack[KTECH_PROJECT_ENCODED_MAX + 1u];
     memcpy(attack, bytes, size);
-    attack[10] = 2u;
+    attack[10] = 3u;
     CHECK(ktech_project_decode(&decoded, attack, size) ==
           KTECH_PROJECT_UNKNOWN_VERSION);
+
+    ktech_project legacy;
+    ktech_project_init(&legacy, UINT32_C(0x11111111));
+    for (uint8_t scene = 0u; scene < KTECH_SCENE_COUNT; ++scene)
+        for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track)
+            CHECK(ktech_project_set_track_role(
+                &legacy, scene, track, (ktech_role)track));
+    CHECK(ktech_project_encode(&legacy, attack, sizeof attack, &size) ==
+          KTECH_PROJECT_OK);
+    attack[10] = 1u;
+    CHECK(ktech_project_decode(&decoded, attack, size) == KTECH_PROJECT_OK);
+    CHECK(memcmp(&legacy, &decoded, sizeof legacy) == 0);
+
+    CHECK(ktech_project_encode(&original, bytes, sizeof bytes, &size) ==
+          KTECH_PROJECT_OK);
     memcpy(attack, bytes, size);
     attack[36] = 1u;
     CHECK(ktech_project_decode(&decoded, attack, size) ==
@@ -342,6 +364,97 @@ static void test_probability_and_compile(void)
     }
     ktech_compiled_free(first);
     ktech_compiled_free(second);
+}
+
+static bool write_test_wav(const char *path)
+{
+    uint8_t header[44] = {0};
+    memcpy(header, "RIFF", 4u);
+    write_u32(header + 4u, 44u);
+    memcpy(header + 8u, "WAVEfmt ", 8u);
+    write_u32(header + 16u, 16u);
+    write_u16(header + 20u, 1u);
+    write_u16(header + 22u, 1u);
+    write_u32(header + 24u, 44100u);
+    write_u32(header + 28u, 88200u);
+    write_u16(header + 32u, 2u);
+    write_u16(header + 34u, 16u);
+    memcpy(header + 36u, "data", 4u);
+    write_u32(header + 40u, 8u);
+    const int16_t samples[] = {0, 12000, -12000, 0};
+    FILE *file = fopen(path, "wb");
+    if (!file) return false;
+    bool ok = fwrite(header, 1u, sizeof header, file) == sizeof header;
+    for (size_t index = 0u; ok && index < 4u; ++index) {
+        uint8_t encoded[2];
+        write_u16(encoded, (uint16_t)samples[index]);
+        ok = fwrite(encoded, 1u, sizeof encoded, file) == sizeof encoded;
+    }
+    return fclose(file) == 0 && ok;
+}
+
+static void test_optional_soundbank(void)
+{
+    static const char *const names[] = {
+        "kick.wav", "snare.wav", "clap.wav", "closed-hat.wav",
+        "open-hat.wav", "cowbell.wav"
+    };
+    char root[] = "/tmp/kilix-techno-bank-XXXXXX";
+    CHECK(mkdtemp(root) != NULL);
+    char directory[512];
+    CHECK(snprintf(directory, sizeof directory, "%s/tr808-fischer", root) > 0);
+    CHECK(mkdir(directory, 0700) == 0);
+    for (size_t index = 0u; index < sizeof names / sizeof names[0]; ++index) {
+        char path[640];
+        CHECK(snprintf(path, sizeof path, "%s/%s", directory, names[index]) > 0);
+        CHECK(write_test_wav(path));
+    }
+    char receipt[640];
+    CHECK(snprintf(receipt, sizeof receipt, "%s/.kilix-bank", directory) > 0);
+    FILE *file = fopen(receipt, "wb");
+    CHECK(file != NULL);
+    if (file) {
+        CHECK(fwrite("receipt\n", 1u, 8u, file) == 8u);
+        CHECK(fclose(file) == 0);
+    }
+    const char *previous_value = getenv("KILIX_TECHNO_SOUNDBANK_DIR");
+    char *previous = previous_value ? strdup(previous_value) : NULL;
+    CHECK(setenv("KILIX_TECHNO_SOUNDBANK_DIR", root, 1) == 0);
+    char warning[160];
+    ktech_soundbank *bank = ktech_soundbank_load(48000u, warning,
+                                                  sizeof warning);
+    CHECK(bank != NULL);
+    CHECK(ktech_soundbank_installed_count(bank) == 1u);
+    CHECK(ktech_soundbank_role_available(bank, KTECH_ROLE_TIDAL_KICK));
+    CHECK(!ktech_soundbank_role_available(bank, KTECH_ROLE_VCSL_FM_PIANO));
+    const chipseq_pcm *pcm = ktech_soundbank_pcm(
+        bank, KTECH_ROLE_TIDAL_KICK);
+    CHECK(pcm != NULL && pcm->frame_count > 0u && pcm->root_note == 36u);
+
+    ktech_project project;
+    ktech_project_init(&project, 14u);
+    ktech_compiled *compiled = ktech_compile_scene_with_bank(
+        &project, 0u, bank, warning, sizeof warning);
+    CHECK(compiled != NULL);
+    if (compiled)
+        CHECK(ktech_compiled_song(compiled)->instruments[0].wave ==
+              CHIPSEQ_WAVE_PCM);
+    ktech_compiled_free(compiled);
+    ktech_soundbank_free(bank);
+    if (previous) {
+        CHECK(setenv("KILIX_TECHNO_SOUNDBANK_DIR", previous, 1) == 0);
+        free(previous);
+    } else {
+        CHECK(unsetenv("KILIX_TECHNO_SOUNDBANK_DIR") == 0);
+    }
+    for (size_t index = 0u; index < sizeof names / sizeof names[0]; ++index) {
+        char path[640];
+        (void)snprintf(path, sizeof path, "%s/%s", directory, names[index]);
+        CHECK(unlink(path) == 0);
+    }
+    CHECK(unlink(receipt) == 0);
+    CHECK(rmdir(directory) == 0);
+    CHECK(rmdir(root) == 0);
 }
 
 static void test_editor_history(void)
@@ -732,6 +845,7 @@ int main(void)
     test_project_files();
     test_settings_and_tap();
     test_probability_and_compile();
+    test_optional_soundbank();
     test_editor_history();
     test_dsp_and_export();
     test_offline_audio();

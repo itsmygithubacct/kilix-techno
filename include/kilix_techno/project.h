@@ -12,7 +12,7 @@ extern "C" {
 #define KTECH_VERSION_MAJOR 0u
 #define KTECH_VERSION_MINOR 1u
 #define KTECH_VERSION_PATCH 0u
-#define KTECH_PROJECT_SCHEMA 1u
+#define KTECH_PROJECT_SCHEMA 2u
 
 #define KTECH_TRACK_COUNT 8u
 #define KTECH_SCENE_COUNT 16u
@@ -78,8 +78,45 @@ typedef enum ktech_role {
     KTECH_ROLE_BASS,
     KTECH_ROLE_CHORD,
     KTECH_ROLE_TEXTURE,
+
+    KTECH_ROLE_TIDAL_KICK,
+    KTECH_ROLE_TIDAL_SNARE,
+    KTECH_ROLE_TIDAL_CLAP,
+    KTECH_ROLE_TIDAL_CLOSED_HAT,
+    KTECH_ROLE_TIDAL_OPEN_HAT,
+    KTECH_ROLE_TIDAL_COWBELL,
+
+    KTECH_ROLE_STARGATE_KICK,
+    KTECH_ROLE_STARGATE_SNARE,
+    KTECH_ROLE_STARGATE_CLOSED_HAT,
+    KTECH_ROLE_STARGATE_OPEN_HAT,
+    KTECH_ROLE_STARGATE_FM_PERC,
+    KTECH_ROLE_STARGATE_SUB,
+
+    KTECH_ROLE_FORGE_GROWL,
+    KTECH_ROLE_FORGE_HOUSE_STAB,
+
+    KTECH_ROLE_MECH_PLUCK_BASS,
+    KTECH_ROLE_MECH_FUZZ_BASS,
+    KTECH_ROLE_MECH_WOBBLE,
+    KTECH_ROLE_MECH_TIME_PAD,
+    KTECH_ROLE_MECH_INDUSTRIAL_HIT,
+    KTECH_ROLE_MECH_GLITCH_VOX,
+
+    KTECH_ROLE_KARORYFER_A2,
+    KTECH_ROLE_KARORYFER_C4,
+    KTECH_ROLE_KARORYFER_F3,
+    KTECH_ROLE_KARORYFER_G2,
+
+    KTECH_ROLE_VCSL_CLAVISYNTH,
+    KTECH_ROLE_VCSL_FM_PIANO,
+    KTECH_ROLE_VCSL_BRAKE_DRUM,
+    KTECH_ROLE_VCSL_OCEAN_DRUM,
     KTECH_ROLE_COUNT
 } ktech_role;
+
+#define KTECH_NATIVE_ROLE_COUNT 9u
+#define KTECH_SAMPLE_BANK_COUNT 6u
 
 typedef enum ktech_launch_quantization {
     KTECH_LAUNCH_STEP = 0,
@@ -177,6 +214,7 @@ ktech_project_result ktech_project_quarantine_autosave(
 
 const char *ktech_project_result_name(ktech_project_result result);
 const char *ktech_role_name(ktech_role role);
+ktech_role ktech_role_fallback(ktech_role role);
 bool ktech_track_length_allowed(uint8_t length);
 bool ktech_project_set_track_length(ktech_project *project, uint8_t scene,
                                     uint8_t track, uint8_t length);

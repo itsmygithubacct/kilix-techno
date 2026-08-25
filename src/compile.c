@@ -26,12 +26,6 @@ struct ktech_compiled {
     char name[KTECH_NAME_CAPACITY];
 };
 
-static const char *const role_names[KTECH_ROLE_COUNT] = {
-    "Circuit Kick", "Wire Snare", "Arc Clap", "Closed Alloy",
-    "Open Alloy", "Node Perc", "Sub Trace", "Vector Stab",
-    "Static Bloom"
-};
-
 static const int8_t kick_pitch_values[TICKS_PER_ROW] = {
     48, 32, 20, 12, 6, 2, 0, -2, -4, -4, -4, -4
 };
@@ -105,7 +99,7 @@ bool ktech_probability_hit(uint32_t seed, uint8_t scene, uint8_t track,
 
 static int base_volume(uint8_t role, unsigned tick)
 {
-    static const uint8_t envelopes[KTECH_ROLE_COUNT][TICKS_PER_ROW] = {
+    static const uint8_t envelopes[KTECH_NATIVE_ROLE_COUNT][TICKS_PER_ROW] = {
         {64, 61, 55, 47, 38, 29, 21, 14, 8, 4, 2, 0},
         {64, 58, 51, 44, 37, 30, 24, 18, 13, 9, 5, 2},
         {64, 42, 58, 34, 48, 28, 18, 12, 8, 5, 3, 1},
@@ -116,15 +110,22 @@ static int base_volume(uint8_t role, unsigned tick)
         {62, 60, 56, 50, 43, 35, 28, 21, 15, 10, 6, 3},
         {48, 52, 56, 60, 58, 54, 50, 47, 44, 41, 38, 35}
     };
-    return envelopes[role][tick];
+    return envelopes[ktech_role_fallback((ktech_role)role)][tick];
 }
 
 static void configure_instrument(chipseq_instrument *instrument,
-                                 uint8_t role)
+                                 uint8_t role, const ktech_soundbank *bank)
 {
     memset(instrument, 0, sizeof *instrument);
-    instrument->name = role_names[role];
-    switch ((ktech_role)role) {
+    instrument->name = ktech_role_name((ktech_role)role);
+    const chipseq_pcm *pcm = ktech_soundbank_pcm(
+        bank, (ktech_role)role);
+    if (pcm) {
+        instrument->wave = CHIPSEQ_WAVE_PCM;
+        instrument->pcm = pcm;
+        return;
+    }
+    switch (ktech_role_fallback((ktech_role)role)) {
     case KTECH_ROLE_KICK:
         instrument->wave = CHIPSEQ_WAVE_TRIANGLE;
         instrument->tri_steps = 32u;
@@ -178,14 +179,15 @@ static void configure_instrument(chipseq_instrument *instrument,
 }
 
 static void build_instruments(ktech_compiled *compiled,
-                              const ktech_scene *scene)
+                              const ktech_scene *scene,
+                              const ktech_soundbank *bank)
 {
     for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
         uint8_t role = scene->tracks[track].role;
         for (uint8_t gate = 0u; gate < GATE_VARIANTS; ++gate) {
             size_t index = (size_t)track * GATE_VARIANTS + gate;
             chipseq_instrument *instrument = &compiled->instruments[index];
-            configure_instrument(instrument, role);
+            configure_instrument(instrument, role, bank);
             unsigned cut = 1u + (unsigned)gate * (TICKS_PER_ROW - 1u) /
                                      (GATE_VARIANTS - 1u);
             if (gate == GATE_VARIANTS - 1u) cut = TICKS_PER_ROW;
@@ -220,9 +222,9 @@ static uint64_t fnv_u32(uint64_t hash, uint32_t value)
     return hash;
 }
 
-ktech_compiled *ktech_compile_scene(const ktech_project *project,
-                                    uint8_t scene_index, char *error,
-                                    size_t error_size)
+ktech_compiled *ktech_compile_scene_with_bank(
+    const ktech_project *project, uint8_t scene_index,
+    const ktech_soundbank *bank, char *error, size_t error_size)
 {
     if (!ktech_project_validate(project, error, error_size) ||
         scene_index >= KTECH_SCENE_COUNT) {
@@ -257,7 +259,7 @@ ktech_compiled *ktech_compile_scene(const ktech_project *project,
     compiled->rows = (uint16_t)rows32;
     compiled->supercycle_rows = supercycle;
     compiled->scene = scene_index;
-    build_instruments(compiled, scene);
+    build_instruments(compiled, scene, bank);
 
     uint64_t hash = UINT64_C(14695981039346656037);
     hash = fnv_u32(hash, project->seed);
@@ -323,6 +325,14 @@ ktech_compiled *ktech_compile_scene(const ktech_project *project,
     }
     if (error && error_size) error[0] = '\0';
     return compiled;
+}
+
+ktech_compiled *ktech_compile_scene(const ktech_project *project,
+                                    uint8_t scene_index, char *error,
+                                    size_t error_size)
+{
+    return ktech_compile_scene_with_bank(project, scene_index, NULL, error,
+                                         error_size);
 }
 
 void ktech_compiled_free(ktech_compiled *compiled)

@@ -2,6 +2,7 @@
 
 #include "kilix_techno/compile.h"
 #include "kilix_techno/dsp.h"
+#include "kilix_techno/soundbank.h"
 
 #include "chip_sequencer.h"
 
@@ -196,10 +197,17 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
     uint32_t data_bytes = (uint32_t)(frames * 4u);
 
     char compile_error[160];
-    ktech_compiled *compiled = ktech_compile_scene(
-        project, options->scene, compile_error, sizeof compile_error);
+    ktech_soundbank *soundbank = ktech_soundbank_load(
+        options->sample_rate, NULL, 0u);
+    ktech_compiled *compiled = soundbank ? ktech_compile_scene_with_bank(
+        project, options->scene, soundbank, compile_error,
+        sizeof compile_error) : NULL;
     if (!compiled) {
-        set_error(error, error_size, "%s", compile_error);
+        if (soundbank)
+            set_error(error, error_size, "%s", compile_error);
+        else
+            set_error(error, error_size, "cannot load sound banks");
+        ktech_soundbank_free(soundbank);
         return false;
     }
     chipseq_options sequence_options;
@@ -213,6 +221,7 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
         if (sequence_live) chipseq_shutdown(&sequence);
         if (dsp_live) ktech_dsp_free(&dsp);
         ktech_compiled_free(compiled);
+        ktech_soundbank_free(soundbank);
         set_error(error, error_size, "cannot initialize offline renderer");
         return false;
     }
@@ -231,6 +240,7 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
         chipseq_shutdown(&sequence);
         ktech_dsp_free(&dsp);
         ktech_compiled_free(compiled);
+        ktech_soundbank_free(soundbank);
         set_error(error, error_size, "cannot start offline song: %s",
                   song_error);
         return false;
@@ -243,6 +253,7 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
         chipseq_shutdown(&sequence);
         ktech_dsp_free(&dsp);
         ktech_compiled_free(compiled);
+        ktech_soundbank_free(soundbank);
         set_error(error, error_size, "unsafe export path: %s",
                   strerror(errno));
         return false;
@@ -254,6 +265,7 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
             chipseq_shutdown(&sequence);
             ktech_dsp_free(&dsp);
             ktech_compiled_free(compiled);
+            ktech_soundbank_free(soundbank);
             set_error(error, error_size, "%s",
                       options->replace_existing ? "unsafe export target" :
                                                   "export already exists");
@@ -264,6 +276,7 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
         chipseq_shutdown(&sequence);
         ktech_dsp_free(&dsp);
         ktech_compiled_free(compiled);
+        ktech_soundbank_free(soundbank);
         set_error(error, error_size, "cannot inspect export target");
         return false;
     }
@@ -280,6 +293,7 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
         chipseq_shutdown(&sequence);
         ktech_dsp_free(&dsp);
         ktech_compiled_free(compiled);
+        ktech_soundbank_free(soundbank);
         set_error(error, error_size, "export filename is too long");
         return false;
     }
@@ -343,6 +357,7 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
     chipseq_shutdown(&sequence);
     ktech_dsp_free(&dsp);
     ktech_compiled_free(compiled);
+    ktech_soundbank_free(soundbank);
     if (!ok) {
         set_error(error, error_size, "export failed: %s",
                   strerror(failure_errno ? failure_errno : EIO));

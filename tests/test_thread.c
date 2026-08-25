@@ -35,21 +35,26 @@ static void *control_thread(void *user)
         ktech_audio_status status;
         ktech_audio_get_status(fixture->audio, &status);
         if (!status.pending && edit < 128u) {
-            uint8_t step = (uint8_t)(edit % 16u);
-            fixture->project.scenes[0].tracks[edit % KTECH_TRACK_COUNT]
-                .steps[step].enabled ^= 1u;
+            ktech_track *track = &fixture->project.scenes[0]
+                .tracks[edit % KTECH_TRACK_COUNT];
+            uint8_t step = (uint8_t)(edit % track->length);
+            track->steps[step].enabled ^= 1u;
             char error[160];
             if (!ktech_audio_publish(fixture->audio, &fixture->project, 0u,
                                      KTECH_LAUNCH_STEP, false,
-                                     error, sizeof error))
+                                     error, sizeof error)) {
+                (void)fprintf(stderr, "test-thread: publish: %s\n", error);
                 atomic_store_explicit(&fixture->failed, true,
                                       memory_order_release);
+            }
             ++edit;
         }
         fixture->project.scenes[0].tracks[0].pan = (uint8_t)edit;
-        if (!ktech_audio_update_mix(fixture->audio, &fixture->project, 0u))
+        if (!ktech_audio_update_mix(fixture->audio, &fixture->project, 0u)) {
+            (void)fprintf(stderr, "test-thread: mix update failed\n");
             atomic_store_explicit(&fixture->failed, true,
                                   memory_order_release);
+        }
     }
     return NULL;
 }
