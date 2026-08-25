@@ -19,6 +19,8 @@ struct ktech_editor {
     uint8_t step;
     uint8_t field;
     bool help;
+    bool step_paint_active;
+    bool step_paint_changed;
 };
 
 static void push_snapshot(ktech_project *stack, size_t *count,
@@ -354,10 +356,27 @@ bool ktech_editor_set_step_enabled(ktech_editor *editor, uint8_t track,
     editor->step = step;
     uint8_t canonical = enabled ? 1u : 0u;
     if (selected->steps[step].enabled == canonical) return true;
-    begin_change(editor);
+    if (!editor->step_paint_active || !editor->step_paint_changed) {
+        begin_change(editor);
+        if (editor->step_paint_active) editor->step_paint_changed = true;
+    }
     selected->steps[step].enabled = canonical;
     (void)finish_change(editor, 0u);
     return true;
+}
+
+void ktech_editor_begin_step_paint(ktech_editor *editor)
+{
+    if (!editor) return;
+    editor->step_paint_active = true;
+    editor->step_paint_changed = false;
+}
+
+void ktech_editor_end_step_paint(ktech_editor *editor)
+{
+    if (!editor) return;
+    editor->step_paint_active = false;
+    editor->step_paint_changed = false;
 }
 
 bool ktech_editor_select_track(ktech_editor *editor, uint8_t track)
@@ -367,6 +386,21 @@ bool ktech_editor_select_track(ktech_editor *editor, uint8_t track)
     editor->track = track;
     if (editor->step >= selected_track(editor)->length)
         editor->step = (uint8_t)(selected_track(editor)->length - 1u);
+    return true;
+}
+
+bool ktech_editor_set_track_role(ktech_editor *editor, uint8_t track,
+                                 ktech_role role)
+{
+    if (!editor || track >= KTECH_TRACK_COUNT || role >= KTECH_ROLE_COUNT)
+        return false;
+    editor->track = track;
+    ktech_track *selected = selected_track(editor);
+    if (selected->role == (uint8_t)role) return true;
+    begin_change(editor);
+    (void)ktech_project_set_track_role(&editor->project, editor->scene,
+                                       track, role);
+    (void)finish_change(editor, 0u);
     return true;
 }
 

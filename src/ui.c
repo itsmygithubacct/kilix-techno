@@ -23,6 +23,32 @@ enum {
 
 #define UI_FONT SR_FONT_COMPACT_7X14
 
+typedef struct instrument_group {
+    const char *name;
+    uint8_t first_role;
+    uint8_t role_count;
+} instrument_group;
+
+static const instrument_group instrument_groups[] = {
+    {"KILIX NATIVE", KTECH_ROLE_KICK, KTECH_NATIVE_ROLE_COUNT},
+    {"TIDALCYCLES TR-808", KTECH_ROLE_TIDAL_KICK, 6u},
+    {"STARGATE", KTECH_ROLE_STARGATE_KICK, 6u},
+    {"SCOREDATA-FORGE", KTECH_ROLE_FORGE_GROWL, 2u},
+    {"MECHSOUNDS", KTECH_ROLE_MECH_PLUCK_BASS, 6u},
+    {"KARORYFER", KTECH_ROLE_KARORYFER_A2, 4u},
+    {"VCSL", KTECH_ROLE_VCSL_CLAVISYNTH, 4u}
+};
+
+typedef struct context_geometry {
+    int x;
+    int y;
+    int width;
+    int height;
+    int header_height;
+    int row_height;
+    int item_count;
+} context_geometry;
+
 static void draw_text(sr_canvas *canvas, int x, int y, const char *text,
                       uint32_t color)
 {
@@ -566,7 +592,7 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
                            (unsigned long long)audio->transport.sink_failures);
         } else {
             (void)snprintf(status, sizeof status,
-                           "BANKS %u/%u %s | L STEP | R CLEAR | ?",
+                           "BANKS %u/%u %s | L PAINT | R MENU/ERASE | ?",
                            audio ? audio->soundbank_count : 0u,
                            KTECH_SAMPLE_BANK_COUNT,
                            audio && audio->soundbank_count ==
@@ -584,7 +610,7 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
               message && message[0] ? COLOR_YELLOW : COLOR_DIM);
     if (canvas->w >= 860 && (!message || !message[0])) {
         const char *hint =
-            "L-CLICK STEP  R-CLICK CLEAR  WHEEL VALUE  ? HELP";
+            "L-DRAG PAINT  R-CLICK OPTIONS  R-DRAG ERASE  ? HELP";
         int hint_x = canvas->w - text_width(hint) - 14;
         sr_fill_rect(canvas, (float)hint_x - 8.0f, (float)footer_y,
                      (float)canvas->w - (float)hint_x + 8.0f, 32.0f,
@@ -607,16 +633,17 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
         draw_text(canvas, x + 102, y + 16,
                   "KEYBOARD FIRST / MOUSE FRIENDLY", COLOR_DIM);
         const char *keys[] = {
-            "ARROWS", "ENTER", "L-CLICK STEP", "R-CLICK STEP",
-            "+ / - / WHEEL", "SPACE", ". / CTRL+SPACE",
+            "ARROWS", "ENTER", "L-DRAG STEP", "R-CLICK STEP",
+            "R-DRAG STEP", "+ / - / WHEEL", "SPACE", ". / CTRL+SPACE",
             "TAB/[ ]/L-TRK", "R-CLICK TRACK", "M / S", ", / >",
             "L-CLICK SCENE", "R-CLICK SCENE", "T", "CTRL+Z / Y",
             "CTRL+S / E", "? / Q"
         };
         const char *descriptions[] = {
-            "MOVE STEP / CHOOSE FIELD", "TOGGLE STEP", "TOGGLE STEP",
-            "CLEAR STEP", "EDIT FOCUSED VALUE", "PLAY / PAUSE",
-            "STOP / RESTART", "CHANGE TRACK", "MUTE TRACK",
+            "MOVE STEP / CHOOSE FIELD", "TOGGLE STEP", "TOGGLE / PAINT",
+            "TRACK OPTIONS", "ERASE / PAINT OFF", "EDIT FOCUSED VALUE",
+            "PLAY / PAUSE", "STOP / RESTART", "CHANGE TRACK",
+            "TRACK OPTIONS",
             "MUTE / SOLO", "CHOOSE SCENE", "SELECT SCENE",
             "LAUNCH SCENE", "TAP TEMPO", "UNDO / REDO",
             "SAVE / EXPORT", "HELP / GUARDED QUIT"
@@ -645,7 +672,7 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
             }
         }
         draw_text(canvas, x + 18, y + box_height - 24,
-                  "LEFT SELECTS OR TOGGLES; RIGHT CLEARS OR ACTS",
+                  "LEFT-DRAG PAINTS; RIGHT-CLICK OPENS OPTIONS; RIGHT-DRAG ERASES",
                   COLOR_YELLOW);
     }
 }
@@ -694,5 +721,178 @@ bool ktech_ui_hit_scene(const ktech_ui_layout *layout, int x, int y,
     int found = (x - layout->scene_x) / button_width;
     if (found < 0 || found >= (int)KTECH_SCENE_COUNT) return false;
     if (scene) *scene = (uint8_t)found;
+    return true;
+}
+
+size_t ktech_ui_context_item_count(const ktech_ui_context_menu *menu)
+{
+    if (!menu) return 0u;
+    switch (menu->page) {
+    case KTECH_UI_CONTEXT_ACTIONS: return 4u;
+    case KTECH_UI_CONTEXT_GROUPS:
+        return KTECH_UI_INSTRUMENT_GROUP_COUNT + 1u;
+    case KTECH_UI_CONTEXT_ROLES:
+        if (menu->group < KTECH_UI_INSTRUMENT_GROUP_COUNT)
+            return (size_t)instrument_groups[menu->group].role_count + 1u;
+        return 1u;
+    default: return 0u;
+    }
+}
+
+const char *ktech_ui_instrument_group_name(uint8_t group)
+{
+    return group < KTECH_UI_INSTRUMENT_GROUP_COUNT ?
+        instrument_groups[group].name : "INSTRUMENTS";
+}
+
+bool ktech_ui_instrument_group_role(uint8_t group, uint8_t item,
+                                    ktech_role *role)
+{
+    if (group >= KTECH_UI_INSTRUMENT_GROUP_COUNT ||
+        item >= instrument_groups[group].role_count)
+        return false;
+    unsigned found = (unsigned)instrument_groups[group].first_role + item;
+    if (found >= KTECH_ROLE_COUNT) return false;
+    if (role) *role = (ktech_role)found;
+    return true;
+}
+
+static bool context_geometry_make(context_geometry *geometry,
+                                  const sr_canvas *canvas,
+                                  const ktech_ui_context_menu *menu)
+{
+    if (!geometry || !canvas || !menu || canvas->w < 40 || canvas->h < 40)
+        return false;
+    size_t count = ktech_ui_context_item_count(menu);
+    if (count == 0u || count > (size_t)INT32_MAX) return false;
+    geometry->item_count = (int)count;
+    geometry->header_height = 34;
+    geometry->row_height = 24;
+    int available = canvas->h - 24 - geometry->header_height;
+    if (geometry->row_height * geometry->item_count > available)
+        geometry->row_height = available / geometry->item_count;
+    if (geometry->row_height < 16) geometry->row_height = 16;
+    geometry->height = geometry->header_height +
+                       geometry->row_height * geometry->item_count + 6;
+    geometry->width = menu->page == KTECH_UI_CONTEXT_ROLES ? 312 : 292;
+    if (geometry->width > canvas->w - 16)
+        geometry->width = canvas->w - 16;
+    geometry->x = menu->anchor_x;
+    geometry->y = menu->anchor_y;
+    if (geometry->x + geometry->width > canvas->w - 8)
+        geometry->x = canvas->w - geometry->width - 8;
+    if (geometry->y + geometry->height > canvas->h - 8)
+        geometry->y = canvas->h - geometry->height - 8;
+    if (geometry->x < 8) geometry->x = 8;
+    if (geometry->y < 8) geometry->y = 8;
+    return true;
+}
+
+static void context_item_label(char *output, size_t capacity,
+                               const ktech_editor *editor,
+                               const ktech_ui_context_menu *menu,
+                               uint8_t item)
+{
+    const ktech_project *project = ktech_editor_project_const(editor);
+    const ktech_track *track = &project->scenes[ktech_editor_scene(editor)]
+                                     .tracks[menu->track];
+    if (menu->page == KTECH_UI_CONTEXT_ACTIONS) {
+        static const char *const actions[] = {
+            "CHANGE INSTRUMENT  >", "MUTE TRACK", "SOLO TRACK", "CLOSE"
+        };
+        const char *label = item < 4u ? actions[item] : "CLOSE";
+        if (item == 1u && track->mute) label = "UNMUTE TRACK";
+        if (item == 2u && track->solo) label = "UNSOLO TRACK";
+        (void)snprintf(output, capacity, "%s", label);
+    } else if (menu->page == KTECH_UI_CONTEXT_GROUPS) {
+        if (item < KTECH_UI_INSTRUMENT_GROUP_COUNT)
+            (void)snprintf(output, capacity, "%s  >",
+                           ktech_ui_instrument_group_name(item));
+        else
+            (void)snprintf(output, capacity, "<  TRACK OPTIONS");
+    } else if (menu->page == KTECH_UI_CONTEXT_ROLES) {
+        ktech_role role;
+        if (ktech_ui_instrument_group_role(menu->group, item, &role))
+            (void)snprintf(output, capacity, "%s%s",
+                           track->role == (uint8_t)role ? "*  " : "   ",
+                           ktech_role_name(role));
+        else
+            (void)snprintf(output, capacity, "<  INSTRUMENT BANKS");
+    } else {
+        output[0] = '\0';
+    }
+}
+
+void ktech_ui_render_context_menu(sr_canvas *canvas,
+                                  const ktech_editor *editor,
+                                  const ktech_ui_context_menu *menu)
+{
+    if (!canvas || !editor || !menu || menu->track >= KTECH_TRACK_COUNT)
+        return;
+    context_geometry geometry;
+    if (!context_geometry_make(&geometry, canvas, menu)) return;
+    sr_fill_rect(canvas, (float)geometry.x + 5.0f,
+                 (float)geometry.y + 5.0f, (float)geometry.width,
+                 (float)geometry.height, COLOR_BG, 0.72f);
+    sr_fill_rect(canvas, (float)geometry.x, (float)geometry.y,
+                 (float)geometry.width, (float)geometry.height,
+                 COLOR_PANEL, 1.0f);
+    sr_stroke_rect(canvas, (float)geometry.x, (float)geometry.y,
+                   (float)geometry.width, (float)geometry.height,
+                   2.0f, COLOR_CYAN, 1.0f);
+    char title[64];
+    if (menu->page == KTECH_UI_CONTEXT_ACTIONS)
+        (void)snprintf(title, sizeof title, "TRACK %u OPTIONS",
+                       (unsigned)menu->track + 1u);
+    else if (menu->page == KTECH_UI_CONTEXT_GROUPS)
+        (void)snprintf(title, sizeof title, "CHOOSE INSTRUMENT BANK");
+    else
+        (void)snprintf(title, sizeof title, "%s",
+                       ktech_ui_instrument_group_name(menu->group));
+    draw_text(canvas, geometry.x + 12, geometry.y + 10,
+              title, COLOR_CYAN);
+    for (int index = 0; index < geometry.item_count; ++index) {
+        int row_y = geometry.y + geometry.header_height +
+                    index * geometry.row_height;
+        char label[64];
+        context_item_label(label, sizeof label, editor, menu,
+                           (uint8_t)index);
+        bool current = false;
+        if (menu->page == KTECH_UI_CONTEXT_ROLES) {
+            ktech_role role;
+            if (ktech_ui_instrument_group_role(menu->group,
+                                                (uint8_t)index, &role)) {
+                const ktech_project *project =
+                    ktech_editor_project_const(editor);
+                current = project->scenes[ktech_editor_scene(editor)]
+                              .tracks[menu->track].role == (uint8_t)role;
+            }
+        }
+        sr_fill_rect(canvas, (float)geometry.x + 6.0f, (float)row_y,
+                     (float)geometry.width - 12.0f,
+                     (float)geometry.row_height - 2.0f,
+                     current ? COLOR_PANEL_RAISED : COLOR_GRID,
+                     current ? 1.0f : index % 2 == 0 ? 0.42f : 0.24f);
+        draw_text(canvas, geometry.x + 14,
+                  row_y + (geometry.row_height - 14) / 2,
+                  label, current ? COLOR_CYAN : COLOR_TEXT);
+    }
+}
+
+bool ktech_ui_hit_context_menu(const sr_canvas *canvas,
+                               const ktech_ui_context_menu *menu,
+                               int x, int y, uint8_t *item)
+{
+    context_geometry geometry;
+    if (!context_geometry_make(&geometry, canvas, menu) ||
+        x < geometry.x || x >= geometry.x + geometry.width ||
+        y < geometry.y + geometry.header_height ||
+        y >= geometry.y + geometry.header_height +
+             geometry.item_count * geometry.row_height)
+        return false;
+    int found = (y - geometry.y - geometry.header_height) /
+                geometry.row_height;
+    if (found < 0 || found >= geometry.item_count) return false;
+    if (item) *item = (uint8_t)found;
     return true;
 }

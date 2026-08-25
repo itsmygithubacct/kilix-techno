@@ -217,15 +217,99 @@ size_t ktech_cell_render(char *output, size_t capacity, int columns,
         append(&writer, " | QERR %llu SINKERR %llu",
                (unsigned long long)audio->queue_failures,
                (unsigned long long)audio->transport.sink_failures);
-    append(&writer, "\nKEYS  L-click toggle  R-click clear  wheel edit  Space play  ? help  Q quit\n");
+    append(&writer, "\nMOUSE L-drag paint | R-click options | R-drag erase | wheel edit\n");
+    append(&writer, "KEYS  Space play  ? help  Q quit\n");
     if (message && message[0]) append(&writer, "STATUS %s\n", message);
     if (ktech_editor_help_visible(editor)) {
         append(&writer,
-               "HELP  L-track select/R-track mute | L-scene select/R-scene launch | Tab/[ ] track | M/S mute/solo | . stop | Ctrl+Space restart | T tap | Ctrl+Z/Y undo/redo | Ctrl+S save | Ctrl+E export\n");
+               "HELP  L-track select/R-track options | L-scene select/R-scene launch | Tab/[ ] track | M/S mute/solo | . stop | Ctrl+Space restart | T tap | Ctrl+Z/Y undo/redo | Ctrl+S save | Ctrl+E export\n");
     }
     if (capacity > 0u) {
         size_t end = writer.used < capacity ? writer.used : capacity - 1u;
         output[end] = '\0';
     }
     return writer.used;
+}
+
+static void cell_context_label(char *output, size_t capacity,
+                               const ktech_editor *editor,
+                               const ktech_ui_context_menu *menu,
+                               uint8_t item)
+{
+    const ktech_project *project = ktech_editor_project_const(editor);
+    const ktech_track *track = &project->scenes[ktech_editor_scene(editor)]
+                                     .tracks[menu->track];
+    if (menu->page == KTECH_UI_CONTEXT_ACTIONS) {
+        const char *label = item == 0u ? "CHANGE INSTRUMENT  >" :
+                            item == 1u ? (track->mute ? "UNMUTE TRACK" :
+                                                       "MUTE TRACK") :
+                            item == 2u ? (track->solo ? "UNSOLO TRACK" :
+                                                       "SOLO TRACK") :
+                                         "CLOSE";
+        (void)snprintf(output, capacity, "%s", label);
+    } else if (menu->page == KTECH_UI_CONTEXT_GROUPS) {
+        if (item < KTECH_UI_INSTRUMENT_GROUP_COUNT)
+            (void)snprintf(output, capacity, "%s  >",
+                           ktech_ui_instrument_group_name(item));
+        else
+            (void)snprintf(output, capacity, "<  TRACK OPTIONS");
+    } else if (menu->page == KTECH_UI_CONTEXT_ROLES) {
+        ktech_role role;
+        if (ktech_ui_instrument_group_role(menu->group, item, &role))
+            (void)snprintf(output, capacity, "%s  %s",
+                           track->role == (uint8_t)role ? "*" : " ",
+                           ktech_role_name(role));
+        else
+            (void)snprintf(output, capacity, "<  INSTRUMENT BANKS");
+    } else {
+        output[0] = '\0';
+    }
+}
+
+size_t ktech_cell_render_context_menu(char *output, size_t capacity,
+                                      int columns,
+                                      const ktech_editor *editor,
+                                      const ktech_ui_context_menu *menu)
+{
+    cell_writer writer = {output, capacity, 0u};
+    if (!editor || !menu || menu->page == KTECH_UI_CONTEXT_CLOSED ||
+        menu->track >= KTECH_TRACK_COUNT)
+        return 0u;
+    if (columns < 20) columns = 20;
+    const ktech_project *project = ktech_editor_project_const(editor);
+    const ktech_track *track = &project->scenes[ktech_editor_scene(editor)]
+                                     .tracks[menu->track];
+    const char *title = menu->page == KTECH_UI_CONTEXT_ACTIONS ?
+        "TRACK OPTIONS" : menu->page == KTECH_UI_CONTEXT_GROUPS ?
+        "INSTRUMENT BANKS" :
+        ktech_ui_instrument_group_name(menu->group);
+    append(&writer, "KILIX TECHNO  |  %s  |  TRACK %u %s\n",
+           title, (unsigned)menu->track + 1u,
+           ktech_role_name((ktech_role)track->role));
+    append(&writer, "Left-click an option. Right-click or Esc closes.\n");
+    size_t count = ktech_ui_context_item_count(menu);
+    int label_width = columns - 4;
+    for (size_t index = 0u; index < count; ++index) {
+        char label[96];
+        cell_context_label(label, sizeof label, editor, menu,
+                           (uint8_t)index);
+        append(&writer, "  %-*.*s\n", label_width, label_width, label);
+    }
+    if (capacity > 0u) {
+        size_t end = writer.used < capacity ? writer.used : capacity - 1u;
+        output[end] = '\0';
+    }
+    return writer.used;
+}
+
+bool ktech_cell_hit_context_menu(const ktech_ui_context_menu *menu,
+                                 int x, int y, int columns,
+                                 uint8_t *item)
+{
+    size_t count = ktech_ui_context_item_count(menu);
+    if (!menu || menu->page == KTECH_UI_CONTEXT_CLOSED || x < 0 ||
+        x >= columns || y < 2 || (size_t)(y - 2) >= count)
+        return false;
+    if (item) *item = (uint8_t)(y - 2);
+    return true;
 }

@@ -71,7 +71,11 @@ bool ktech_editor_select_step(ktech_editor *editor, uint8_t track,
                               uint8_t step, bool toggle);
 bool ktech_editor_set_step_enabled(ktech_editor *editor, uint8_t track,
                                    uint8_t step, bool enabled);
+void ktech_editor_begin_step_paint(ktech_editor *editor);
+void ktech_editor_end_step_paint(ktech_editor *editor);
 bool ktech_editor_select_track(ktech_editor *editor, uint8_t track);
+bool ktech_editor_set_track_role(ktech_editor *editor, uint8_t track,
+                                 ktech_role role);
 bool ktech_editor_select_scene(ktech_editor *editor, uint8_t scene);
 void ktech_editor_mark_saved(ktech_editor *editor);
 bool ktech_editor_dirty(const ktech_editor *editor);

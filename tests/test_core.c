@@ -499,10 +499,41 @@ static void test_editor_history(void)
     CHECK(ktech_editor_revision(editor) == cleared_revision);
     CHECK(!ktech_editor_set_step_enabled(editor, 3u, KTECH_STEP_COUNT,
                                          false));
+    bool original_steps[4];
+    for (uint8_t step = 4u; step < 8u; ++step)
+        original_steps[step - 4u] =
+            ktech_editor_project(editor)->scenes[0].tracks[3]
+                .steps[step].enabled != 0u;
+    bool painted = !original_steps[0];
+    ktech_editor_begin_step_paint(editor);
+    for (uint8_t step = 4u; step < 8u; ++step)
+        CHECK(ktech_editor_set_step_enabled(editor, 3u, step, painted));
+    ktech_editor_end_step_paint(editor);
+    for (uint8_t step = 4u; step < 8u; ++step)
+        CHECK((ktech_editor_project(editor)->scenes[0].tracks[3]
+                   .steps[step].enabled != 0u) == painted);
+    CHECK((ktech_editor_apply(editor, KTECH_ACTION_UNDO,
+                              KITTYIN_ACTION_PRESS) &
+           KTECH_EFFECT_PROJECT_CHANGED) != 0u);
+    for (uint8_t step = 4u; step < 8u; ++step)
+        CHECK((ktech_editor_project(editor)->scenes[0].tracks[3]
+                   .steps[step].enabled != 0u) ==
+              original_steps[step - 4u]);
     CHECK(ktech_editor_select_track(editor, 4u));
     CHECK(!ktech_editor_select_track(editor, 4u));
     CHECK(ktech_editor_select_track(editor, 3u));
     CHECK(!ktech_editor_select_track(editor, KTECH_TRACK_COUNT));
+    uint64_t role_revision = ktech_editor_revision(editor);
+    CHECK(ktech_editor_set_track_role(editor, 3u,
+                                      KTECH_ROLE_VCSL_FM_PIANO));
+    CHECK(ktech_editor_revision(editor) > role_revision);
+    role_revision = ktech_editor_revision(editor);
+    CHECK(ktech_editor_set_track_role(editor, 3u,
+                                      KTECH_ROLE_VCSL_FM_PIANO));
+    CHECK(ktech_editor_revision(editor) == role_revision);
+    CHECK(!ktech_editor_set_track_role(editor, KTECH_TRACK_COUNT,
+                                       KTECH_ROLE_KICK));
+    CHECK(!ktech_editor_set_track_role(editor, 3u, KTECH_ROLE_COUNT));
     CHECK(ktech_editor_apply(editor, KTECH_ACTION_INCREASE,
                              KITTYIN_ACTION_RELEASE) == KTECH_EFFECT_NONE);
     CHECK(ktech_project_validate(ktech_editor_project(editor), NULL, 0u));
@@ -839,6 +870,16 @@ static void test_ui_models(void)
                                  &scene_number));
         CHECK(scene_number == 7u);
         CHECK(!ktech_ui_hit_scene(&layout, 0, 0, &scene_number));
+
+        ktech_ui_context_menu menu = {
+            KTECH_UI_CONTEXT_ACTIONS, 0u, 0u, 100, 100
+        };
+        CHECK(ktech_ui_context_item_count(&menu) == 4u);
+        ktech_ui_render_context_menu(&canvas, editor, &menu);
+        uint8_t item;
+        CHECK(ktech_ui_hit_context_menu(&canvas, &menu, 110, 146, &item));
+        CHECK(item == 0u);
+        CHECK(!ktech_ui_hit_context_menu(&canvas, &menu, 20, 20, &item));
     }
     sr_canvas_free(&canvas);
 
@@ -875,6 +916,38 @@ static void test_ui_models(void)
     CHECK(ktech_cell_render(tiny, sizeof tiny, 40, editor, &status, NULL) >
           sizeof tiny);
     CHECK(tiny[sizeof tiny - 1u] == '\0');
+
+    unsigned expected_role = 0u;
+    for (uint8_t group = 0u; group < KTECH_UI_INSTRUMENT_GROUP_COUNT;
+         ++group) {
+        CHECK(ktech_ui_instrument_group_name(group) != NULL);
+        uint8_t item = 0u;
+        ktech_role role;
+        while (ktech_ui_instrument_group_role(group, item, &role)) {
+            CHECK((unsigned)role == expected_role);
+            ++expected_role;
+            ++item;
+        }
+        ktech_ui_context_menu roles = {
+            KTECH_UI_CONTEXT_ROLES, 0u, group, 0, 0
+        };
+        CHECK(ktech_ui_context_item_count(&roles) == (size_t)item + 1u);
+    }
+    CHECK(expected_role == KTECH_ROLE_COUNT);
+    ktech_ui_context_menu cell_menu = {
+        KTECH_UI_CONTEXT_GROUPS, 0u, 0u, 0, 0
+    };
+    size_t menu_needed = ktech_cell_render_context_menu(
+        cells, sizeof cells, 80, editor, &cell_menu);
+    CHECK(menu_needed < sizeof cells);
+    CHECK(strstr(cells, "INSTRUMENT BANKS") != NULL);
+    CHECK(strstr(cells, "TIDALCYCLES TR-808") != NULL);
+    uint8_t menu_item;
+    CHECK(ktech_cell_hit_context_menu(&cell_menu, 2, 2, 80,
+                                      &menu_item));
+    CHECK(menu_item == 0u);
+    CHECK(!ktech_cell_hit_context_menu(&cell_menu, 2, 1, 80,
+                                       &menu_item));
     ktech_editor_free(editor);
 }
 
