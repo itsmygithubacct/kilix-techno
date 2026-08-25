@@ -233,7 +233,7 @@ ktech_audio *ktech_audio_create(const ktech_project *project,
     pcmmix_options mixer_options;
     pcmmix_options_init(&mixer_options);
     mixer_options.sample_rate = options->sample_rate;
-    mixer_options.channels = 2u;
+    mixer_options.output_channels = 2u;
     mixer_options.latency_ms = options->latency_ms;
     mixer_options.soft_clip = false;
     mixer_options.offline = options->offline;

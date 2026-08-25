@@ -7,7 +7,7 @@ The SHA-256 values below identify those license files.
 | Component | Repository | Commit | SPDX | License SHA-256 |
 | --- | --- | --- | --- | --- |
 | chip-sequencer | `https://github.com/itsmygithubacct/chip-sequencer.git` | `972e67b9d24bc1e35aef4fdaaad96922cb3fe033` | MIT | `ff220b9002c501264f5d8e0985a1699e4a9ebc6ef803b4152eb2f18cf6ba71c9` |
-| pcm-mixer | `https://github.com/itsmygithubacct/pcm-mixer.git` | `5f073f6a33e5caa3e36c1209bf65b8a780025d9b` | MIT | `ef34479183d442f9ec37c2c53154fd8f1477c575dab7aa403660f342fba74ca3` |
+| pcm-mixer | `https://github.com/itsmygithubacct/pcm-mixer.git` | `0f391617a1363bc15c347abedfad19a18745240a` | MIT | `ef34479183d442f9ec37c2c53154fd8f1477c575dab7aa403660f342fba74ca3` |
 | kitty-terminal-session | `https://github.com/itsmygithubacct/kitty-terminal-session.git` | `b6b4e1e4b6933d60bfc919a90d8e1f6f86b20e77` | MIT | `938e0db7e6acd7e99d205863bcbdeda47f5fbd053802519f411dbefe0799071e` |
 | soft-raster | `https://github.com/itsmygithubacct/soft-raster.git` | `2b0c241729dec182a87ebab78edd10b142edf828` | MIT | `94f7ac89fd4e70ab0e837fa993772c21059576904f395186b257c5975910a6e2` |
 | kilix-state | `https://github.com/itsmygithubacct/kilix-state.git` | `35f742d6cf2f7635b43157fcf6f2e0264bf0d761` | MIT | `938e0db7e6acd7e99d205863bcbdeda47f5fbd053802519f411dbefe0799071e` |

@@ -17,7 +17,7 @@ if [ -n "$bad" ]; then
 fi
 
 expected='chip-sequencer 972e67b9d24bc1e35aef4fdaaad96922cb3fe033
-pcm-mixer 5f073f6a33e5caa3e36c1209bf65b8a780025d9b
+pcm-mixer 0f391617a1363bc15c347abedfad19a18745240a
 kitty-terminal-session b6b4e1e4b6933d60bfc919a90d8e1f6f86b20e77
 soft-raster 2b0c241729dec182a87ebab78edd10b142edf828
 kilix-state 35f742d6cf2f7635b43157fcf6f2e0264bf0d761'
