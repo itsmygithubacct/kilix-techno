@@ -4,6 +4,7 @@
 #include "kilix_state_codec.h"
 #include "kitty_input.h"
 #include "kitty_keyboard.h"
+#include "workstation_internal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -48,6 +49,11 @@ static const uint8_t role_default_notes[KTECH_ROLE_COUNT] = {
     60u, 60u, 60u, 60u,
     60u, 36u, 60u, 60u
 };
+
+uint8_t ktech_role_default_note(ktech_role role)
+{
+    return role < KTECH_ROLE_COUNT ? role_default_notes[role] : 60u;
+}
 
 #define KEY_BIND(action_value, key_value, modifier_value) \
     {(key_value), (modifier_value), (action_value), KTECH_BINDING_KEY, \
@@ -295,6 +301,7 @@ void ktech_project_init(ktech_project *project, uint32_t seed)
 {
     if (!project) return;
     memset(project, 0, sizeof *project);
+    ktech_workstation_defaults(project);
     project->seed = seed ? seed : UINT32_C(0x4b544543);
     project->tempo = 126u;
     project->swing = 54u;
@@ -509,6 +516,7 @@ bool ktech_project_validate(const ktech_project *project, char *error,
             }
         }
     }
+    if (!ktech_workstation_validate(project, error, error_size)) return false;
     if (error && error_size) error[0] = '\0';
     return true;
 }
@@ -520,7 +528,7 @@ static size_t encoded_size_for(const ktech_project *project)
            KTECH_SCENE_COUNT * KTECH_TRACK_COUNT *
                (TRACK_PREFIX_SIZE + KTECH_STEP_COUNT * STEP_SIZE) +
            (size_t)project->binding_count * BINDING_SIZE +
-           1u + name_length;
+           1u + name_length + ktech_workstation_encoded_size(project);
 }
 
 static bool write_header(kilixstate_writer *writer,
@@ -588,7 +596,8 @@ static bool write_payload(kilixstate_writer *writer,
     }
     const size_t length = strlen(project->name);
     return kilixstate_write_u8(writer, (uint8_t)length) &&
-           kilixstate_write_bytes(writer, project->name, length);
+           kilixstate_write_bytes(writer, project->name, length) &&
+           ktech_workstation_write(writer, project);
 }
 
 ktech_project_result ktech_project_encode(const ktech_project *project,
@@ -653,7 +662,7 @@ static bool read_header(kilixstate_reader *reader, ktech_project *project,
     if (memcmp(magic, project_magic, sizeof magic) != 0 ||
         header_size != PROJECT_HEADER_SIZE || total != reader->size)
         return false;
-    if (schema != 1u && schema != KTECH_PROJECT_SCHEMA) {
+    if (schema != 1u && schema != 2u && schema != KTECH_PROJECT_SCHEMA) {
         reader->result = KILIXSTATE_CODEC_UNKNOWN_VERSION;
         return false;
     }
@@ -731,7 +740,12 @@ static bool read_payload(kilixstate_reader *reader, ktech_project *project,
         !kilixstate_read_bytes(reader, project->name, name_length))
         return false;
     project->name[name_length] = '\0';
-    return kilixstate_reader_require_finished(reader);
+    if (schema < 3u) {
+        ktech_workstation_defaults(project);
+        return kilixstate_reader_require_finished(reader);
+    }
+    return ktech_workstation_read(reader, project) &&
+           kilixstate_reader_require_finished(reader);
 }
 
 ktech_project_result ktech_project_decode(ktech_project *project,
@@ -769,6 +783,129 @@ ktech_project_result ktech_project_decode(ktech_project *project,
     return KTECH_PROJECT_OK;
 }
 
+bool ktech_project_pattern_create(ktech_project *project, uint8_t scene,
+                                  uint8_t track, const char *name,
+                                  uint8_t *pattern_out)
+{
+    if (!project || !name || name[0] == '\0' ||
+        scene >= KTECH_SCENE_COUNT || track >= KTECH_TRACK_COUNT ||
+        project->pattern_count >= KTECH_PATTERN_CAPACITY)
+        return false;
+    size_t length = strnlen(name, KTECH_PATTERN_NAME_CAPACITY);
+    if (length == KTECH_PATTERN_NAME_CAPACITY) return false;
+    uint16_t index = project->pattern_count;
+    ktech_pattern *pattern = &project->patterns[index];
+    memset(pattern, 0, sizeof *pattern);
+    (void)snprintf(pattern->name, sizeof pattern->name, "%s", name);
+    const ktech_track *source = &project->scenes[scene].tracks[track];
+    pattern->role = source->role;
+    pattern->length = source->length;
+    memcpy(pattern->steps, source->steps, sizeof pattern->steps);
+    ++project->pattern_count;
+    project->scene_patterns[scene][track] = (uint8_t)index;
+    if (!ktech_project_validate(project, NULL, 0u)) {
+        project->scene_patterns[scene][track] = KTECH_PATTERN_NONE;
+        --project->pattern_count;
+        memset(pattern, 0, sizeof *pattern);
+        return false;
+    }
+    if (pattern_out) *pattern_out = (uint8_t)index;
+    return true;
+}
+
+bool ktech_project_pattern_assign(ktech_project *project, uint8_t scene,
+                                  uint8_t track, uint8_t pattern)
+{
+    if (!project || scene >= KTECH_SCENE_COUNT ||
+        track >= KTECH_TRACK_COUNT ||
+        (pattern != KTECH_PATTERN_NONE && pattern >= project->pattern_count))
+        return false;
+    project->scene_patterns[scene][track] = pattern;
+    return true;
+}
+
+bool ktech_project_pattern_duplicate(ktech_project *project, uint8_t pattern,
+                                     bool linked, uint8_t *duplicate)
+{
+    if (!project || pattern >= project->pattern_count) return false;
+    if (linked) {
+        if (duplicate) *duplicate = pattern;
+        return true;
+    }
+    if (project->pattern_count >= KTECH_PATTERN_CAPACITY) return false;
+    uint16_t index = project->pattern_count;
+    project->patterns[index] = project->patterns[pattern];
+    char base[KTECH_PATTERN_NAME_CAPACITY];
+    (void)snprintf(base, sizeof base, "%s", project->patterns[pattern].name);
+    int count = snprintf(project->patterns[index].name,
+                         sizeof project->patterns[index].name,
+                         "%.26s copy", base);
+    if (count < 0 || (size_t)count >= sizeof project->patterns[index].name) {
+        memset(&project->patterns[index], 0, sizeof project->patterns[index]);
+        return false;
+    }
+    ++project->pattern_count;
+    if (duplicate) *duplicate = (uint8_t)index;
+    return true;
+}
+
+const ktech_track *ktech_project_resolve_track(const ktech_project *project,
+                                               uint8_t scene, uint8_t track,
+                                               ktech_track *scratch)
+{
+    if (!project || scene >= KTECH_SCENE_COUNT || track >= KTECH_TRACK_COUNT)
+        return NULL;
+    const ktech_track *source = &project->scenes[scene].tracks[track];
+    uint8_t reference = project->scene_patterns[scene][track];
+    if (reference == KTECH_PATTERN_NONE) return source;
+    if (reference >= project->pattern_count || !scratch) return NULL;
+    *scratch = *source;
+    const ktech_pattern *pattern = &project->patterns[reference];
+    scratch->role = pattern->role;
+    scratch->length = pattern->length;
+    memcpy(scratch->steps, pattern->steps, sizeof scratch->steps);
+    return scratch;
+}
+
+uint16_t ktech_project_arrangement_bars(const ktech_project *project)
+{
+    if (!project) return 0u;
+    uint16_t bars = 0u;
+    for (uint16_t index = 0u; index < project->arrangement_count; ++index)
+        bars = (uint16_t)(bars + project->arrangement[index].bars);
+    return bars;
+}
+
+bool ktech_project_arrangement_add(ktech_project *project, uint8_t scene,
+                                   uint8_t bars,
+                                   const uint8_t patterns[KTECH_TRACK_COUNT])
+{
+    if (!project || scene >= KTECH_SCENE_COUNT || bars == 0u ||
+        project->arrangement_count >= KTECH_ARRANGEMENT_CAPACITY ||
+        (unsigned)ktech_project_arrangement_bars(project) + bars >
+            KTECH_SONG_BAR_CAPACITY)
+        return false;
+    ktech_arrangement_entry *entry =
+        &project->arrangement[project->arrangement_count];
+    memset(entry, 0, sizeof *entry);
+    entry->scene = scene;
+    entry->bars = bars;
+    for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
+        uint8_t reference = patterns ? patterns[track] :
+                                       project->scene_patterns[scene][track];
+        if (reference != KTECH_PATTERN_NONE &&
+            reference >= project->pattern_count) {
+            memset(entry, 0, sizeof *entry);
+            return false;
+        }
+        entry->patterns[track] = reference;
+    }
+    ++project->arrangement_count;
+    if (project->arrangement_selected == UINT16_MAX)
+        project->arrangement_selected = 0u;
+    return true;
+}
+
 static ktech_project_result from_store_result(kilixstate_result result)
 {
     switch (result) {
@@ -785,27 +922,39 @@ static ktech_project_result from_store_result(kilixstate_result result)
 static ktech_project_result save_store(const ktech_project *project,
                                        kilixstate_options *options)
 {
-    uint8_t bytes[KTECH_PROJECT_ENCODED_MAX];
+    uint8_t *bytes = malloc(KTECH_PROJECT_ENCODED_MAX);
+    if (!bytes) return KTECH_PROJECT_IO_ERROR;
     size_t size;
     ktech_project_result encoded = ktech_project_encode(
-        project, bytes, sizeof bytes, &size);
-    if (encoded != KTECH_PROJECT_OK) return encoded;
+        project, bytes, KTECH_PROJECT_ENCODED_MAX, &size);
+    if (encoded != KTECH_PROJECT_OK) {
+        free(bytes);
+        return encoded;
+    }
     kilixstate_store store;
     kilixstate_result result = kilixstate_store_init(&store, options);
-    if (result != KILIXSTATE_OK) return from_store_result(result);
+    if (result != KILIXSTATE_OK) {
+        free(bytes);
+        return from_store_result(result);
+    }
     result = kilixstate_save(&store, bytes, size);
     kilixstate_store_close(&store);
+    free(bytes);
     return from_store_result(result);
 }
 
 static ktech_project_result save_store_no_replace(
     const ktech_project *project, const char *absolute_path)
 {
-    uint8_t bytes[KTECH_PROJECT_ENCODED_MAX];
+    uint8_t *bytes = malloc(KTECH_PROJECT_ENCODED_MAX);
+    if (!bytes) return KTECH_PROJECT_IO_ERROR;
     size_t size;
     ktech_project_result encoded = ktech_project_encode(
-        project, bytes, sizeof bytes, &size);
-    if (encoded != KTECH_PROJECT_OK) return encoded;
+        project, bytes, KTECH_PROJECT_ENCODED_MAX, &size);
+    if (encoded != KTECH_PROJECT_OK) {
+        free(bytes);
+        return encoded;
+    }
 
     kilixstate_options final_options;
     kilixstate_options_init(&final_options);
@@ -815,7 +964,10 @@ static ktech_project_result save_store_no_replace(
     kilixstate_store final_store;
     kilixstate_result stored = kilixstate_store_init(&final_store,
                                                       &final_options);
-    if (stored != KILIXSTATE_OK) return from_store_result(stored);
+    if (stored != KILIXSTATE_OK) {
+        free(bytes);
+        return from_store_result(stored);
+    }
 
     static atomic_uint temporary_counter;
     unsigned counter = atomic_fetch_add_explicit(&temporary_counter, 1u,
@@ -830,6 +982,7 @@ static ktech_project_result save_store_no_replace(
     if (name_length < 0 || (size_t)name_length >= sizeof staging_name ||
         path_length < 0 || (size_t)path_length >= sizeof staging_path) {
         kilixstate_store_close(&final_store);
+        free(bytes);
         return KTECH_PROJECT_IO_ERROR;
     }
 
@@ -844,6 +997,7 @@ static ktech_project_result save_store_no_replace(
         stored = kilixstate_save(&staging_store, bytes, size);
         kilixstate_store_close(&staging_store);
     }
+    free(bytes);
     if (stored != KILIXSTATE_OK) {
         kilixstate_store_close(&final_store);
         return from_store_result(stored);
@@ -879,15 +1033,24 @@ static ktech_project_result save_store_no_replace(
 static ktech_project_result load_store(ktech_project *project,
                                        kilixstate_options *options)
 {
-    uint8_t bytes[KTECH_PROJECT_ENCODED_MAX];
+    uint8_t *bytes = malloc(KTECH_PROJECT_ENCODED_MAX);
+    if (!bytes) return KTECH_PROJECT_IO_ERROR;
     size_t size = 0u;
     kilixstate_store store;
     kilixstate_result result = kilixstate_store_init(&store, options);
-    if (result != KILIXSTATE_OK) return from_store_result(result);
-    result = kilixstate_load(&store, bytes, sizeof bytes, &size);
+    if (result != KILIXSTATE_OK) {
+        free(bytes);
+        return from_store_result(result);
+    }
+    result = kilixstate_load(&store, bytes, KTECH_PROJECT_ENCODED_MAX, &size);
     kilixstate_store_close(&store);
-    if (result != KILIXSTATE_OK) return from_store_result(result);
-    return ktech_project_decode(project, bytes, size);
+    if (result != KILIXSTATE_OK) {
+        free(bytes);
+        return from_store_result(result);
+    }
+    ktech_project_result decoded = ktech_project_decode(project, bytes, size);
+    free(bytes);
+    return decoded;
 }
 
 ktech_project_result ktech_project_save(const ktech_project *project,

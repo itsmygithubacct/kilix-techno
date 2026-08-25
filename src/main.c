@@ -14,6 +14,11 @@ static void print_help(FILE *stream)
         "  --headless            validate/describe without a terminal UI\n"
         "  --save PATH           save a headless new/open project\n"
         "  --export IN OUT       export the active scene as stereo WAV\n"
+        "  --export-arrangement IN OUT  export the song arrangement as WAV\n"
+        "  --export-stems IN DIR export eight atomic track stems\n"
+        "  --export-midi IN OUT  export bounded Standard MIDI\n"
+        "  --import-midi IN OUT  import MIDI into a new .ktech project\n"
+        "  --export-preset IN OUT NAME  use a saved export preset\n"
         "  --bars N              export length in four-beat bars (1..256)\n"
         "  --sample-rate HZ      audio/export rate (8000..192000)\n"
         "  --seed N              deterministic seed for a new project\n"
@@ -50,7 +55,7 @@ int main(int argc, char **argv)
             print_help(stdout);
             return 0;
         } else if (strcmp(argument, "--version") == 0) {
-            (void)printf("kilix-techno 0.1.0\n");
+            (void)printf("kilix-techno 0.2.1\n");
             return 0;
         } else if (strcmp(argument, "--new") == 0) {
             options.new_project = true;
@@ -65,8 +70,41 @@ int main(int argc, char **argv)
         } else if (strcmp(argument, "--save") == 0 && index + 1 < argc) {
             options.save_path = argv[++index];
         } else if (strcmp(argument, "--export") == 0 && index + 2 < argc) {
+            if (options.operation != KTECH_CLI_RUN) goto duplicate_operation;
             options.export_input = argv[++index];
             options.export_output = argv[++index];
+            options.operation = KTECH_CLI_EXPORT_WAV;
+        } else if (strcmp(argument, "--export-arrangement") == 0 &&
+                   index + 2 < argc) {
+            if (options.operation != KTECH_CLI_RUN) goto duplicate_operation;
+            options.export_input = argv[++index];
+            options.export_output = argv[++index];
+            options.operation = KTECH_CLI_EXPORT_ARRANGEMENT;
+        } else if (strcmp(argument, "--export-stems") == 0 &&
+                   index + 2 < argc) {
+            if (options.operation != KTECH_CLI_RUN) goto duplicate_operation;
+            options.export_input = argv[++index];
+            options.export_output = argv[++index];
+            options.operation = KTECH_CLI_EXPORT_STEMS;
+        } else if (strcmp(argument, "--export-midi") == 0 &&
+                   index + 2 < argc) {
+            if (options.operation != KTECH_CLI_RUN) goto duplicate_operation;
+            options.export_input = argv[++index];
+            options.export_output = argv[++index];
+            options.operation = KTECH_CLI_EXPORT_MIDI;
+        } else if (strcmp(argument, "--import-midi") == 0 &&
+                   index + 2 < argc) {
+            if (options.operation != KTECH_CLI_RUN) goto duplicate_operation;
+            options.export_input = argv[++index];
+            options.export_output = argv[++index];
+            options.operation = KTECH_CLI_IMPORT_MIDI;
+        } else if (strcmp(argument, "--export-preset") == 0 &&
+                   index + 3 < argc) {
+            if (options.operation != KTECH_CLI_RUN) goto duplicate_operation;
+            options.export_input = argv[++index];
+            options.export_output = argv[++index];
+            options.preset_name = argv[++index];
+            options.operation = KTECH_CLI_EXPORT_PRESET;
         } else if (strcmp(argument, "--sample-rate") == 0 &&
                    index + 1 < argc) {
             if (!parse_u32(argv[++index], 8000u, 192000u,
@@ -92,13 +130,13 @@ int main(int argc, char **argv)
             print_help(stderr);
             return 2;
         }
+        continue;
+duplicate_operation:
+        (void)fprintf(stderr, "only one import/export operation is allowed\n");
+        return 2;
     }
     if (options.open_path && options.new_project) {
         (void)fprintf(stderr, "--new and --open are mutually exclusive\n");
-        return 2;
-    }
-    if ((options.export_input == NULL) != (options.export_output == NULL)) {
-        (void)fprintf(stderr, "--export requires input and output paths\n");
         return 2;
     }
     return ktech_app_run(&options);

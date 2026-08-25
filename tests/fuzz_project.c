@@ -1,5 +1,6 @@
 #include "kilix_techno/project.h"
 #include "kilix_techno/settings.h"
+#include "kilix_techno/midi.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -32,22 +33,31 @@ static size_t parse_iterations(int argc, char **argv)
 
 static int fuzz_project(size_t iterations)
 {
-    uint8_t canonical[KTECH_PROJECT_ENCODED_MAX];
-    uint8_t mutated[KTECH_PROJECT_ENCODED_MAX + 1u];
+    uint8_t *canonical = malloc(KTECH_PROJECT_ENCODED_MAX);
+    uint8_t *mutated = malloc(KTECH_PROJECT_ENCODED_MAX + 1u);
+    ktech_project *destination = malloc(sizeof *destination);
+    ktech_project *before = malloc(sizeof *before);
+    if (!canonical || !mutated || !destination || !before) {
+        free(canonical); free(mutated); free(destination); free(before);
+        return 1;
+    }
     size_t canonical_size;
     ktech_project source;
     ktech_project_init(&source, UINT32_C(0x6b746563));
-    if (ktech_project_encode(&source, canonical, sizeof canonical,
-                             &canonical_size) != KTECH_PROJECT_OK)
+    if (ktech_project_encode(&source, canonical, KTECH_PROJECT_ENCODED_MAX,
+                             &canonical_size) != KTECH_PROJECT_OK) {
+        free(canonical); free(mutated); free(destination); free(before);
         return 1;
+    }
 
+    int failed = 0;
     for (size_t iteration = 0u; iteration < iterations; ++iteration) {
         memcpy(mutated, canonical, canonical_size);
         size_t size = canonical_size;
         uint32_t mode = next_random() % 4u;
         if (mode == 0u) {
             size = next_random() % (canonical_size + 1u);
-        } else if (mode == 1u && size < sizeof mutated) {
+        } else if (mode == 1u && size < KTECH_PROJECT_ENCODED_MAX + 1u) {
             mutated[size++] = (uint8_t)next_random();
         } else {
             size_t changes = 1u + next_random() % 8u;
@@ -56,26 +66,79 @@ static int fuzz_project(size_t iterations)
                 mutated[offset] ^= (uint8_t)(1u << (next_random() & 7u));
             }
         }
-        ktech_project destination;
-        memset(&destination, 0xa5, sizeof destination);
-        ktech_project before = destination;
+        memset(destination, 0xa5, sizeof *destination);
+        *before = *destination;
         ktech_project_result result = ktech_project_decode(
-            &destination, mutated, size);
+            destination, mutated, size);
         if (result == KTECH_PROJECT_OK) {
-            if (!ktech_project_validate(&destination, NULL, 0u)) return 1;
-        } else if (memcmp(&destination, &before, sizeof destination) != 0) {
-            return 1;
+            if (!ktech_project_validate(destination, NULL, 0u)) {
+                failed = 1;
+                break;
+            }
+        } else if (memcmp(destination, before, sizeof *destination) != 0) {
+            failed = 1;
+            break;
         }
     }
-    ktech_project destination;
-    memset(&destination, 0xa5, sizeof destination);
-    ktech_project before = destination;
-    if (ktech_project_decode(&destination, canonical,
+    memset(destination, 0xa5, sizeof *destination);
+    *before = *destination;
+    if (ktech_project_decode(destination, canonical,
                              KTECH_PROJECT_MAX_BYTES + 1u) !=
             KTECH_PROJECT_TOO_LARGE ||
-        memcmp(&destination, &before, sizeof destination) != 0)
+        memcmp(destination, before, sizeof *destination) != 0)
+        failed = 1;
+    free(canonical); free(mutated); free(destination); free(before);
+    return failed;
+}
+
+static int fuzz_midi(size_t iterations)
+{
+    uint8_t *canonical = malloc(KTECH_MIDI_MAX_BYTES);
+    uint8_t *mutated = malloc(KTECH_MIDI_MAX_BYTES + 1u);
+    ktech_project *destination = malloc(sizeof *destination);
+    ktech_project *before = malloc(sizeof *before);
+    if (!canonical || !mutated || !destination || !before) {
+        free(canonical); free(mutated); free(destination); free(before);
         return 1;
-    return 0;
+    }
+    ktech_project source;
+    ktech_project_init(&source, UINT32_C(0x6d696469));
+    size_t canonical_size = 0u;
+    char error[96];
+    if (!ktech_midi_encode(&source, canonical, KTECH_MIDI_MAX_BYTES,
+                           &canonical_size, error, sizeof error)) {
+        free(canonical); free(mutated); free(destination); free(before);
+        return 1;
+    }
+    int failed = 0;
+    for (size_t iteration = 0u; iteration < iterations; ++iteration) {
+        memcpy(mutated, canonical, canonical_size);
+        size_t size = canonical_size;
+        uint32_t mode = next_random() % 3u;
+        if (mode == 0u) size = next_random() % (canonical_size + 1u);
+        else if (mode == 1u && size < KTECH_MIDI_MAX_BYTES + 1u)
+            mutated[size++] = (uint8_t)next_random();
+        else {
+            size_t changes = 1u + next_random() % 8u;
+            for (size_t change = 0u; change < changes; ++change)
+                mutated[next_random() % size] ^=
+                    (uint8_t)(1u << (next_random() & 7u));
+        }
+        memset(destination, 0xa5, sizeof *destination);
+        *before = *destination;
+        if (ktech_midi_decode(destination, mutated, size, error,
+                              sizeof error)) {
+            if (!ktech_project_validate(destination, NULL, 0u)) {
+                failed = 1;
+                break;
+            }
+        } else if (memcmp(destination, before, sizeof *destination) != 0) {
+            failed = 1;
+            break;
+        }
+    }
+    free(canonical); free(mutated); free(destination); free(before);
+    return failed;
 }
 
 static int fuzz_settings(size_t iterations)
@@ -122,11 +185,13 @@ int main(int argc, char **argv)
         return 2;
     }
     if (fuzz_project(iterations) != 0 ||
-        fuzz_settings(iterations / 4u + 1u) != 0) {
+        fuzz_settings(iterations / 4u + 1u) != 0 ||
+        fuzz_midi(iterations / 4u + 1u) != 0) {
         (void)fprintf(stderr, "fuzz-project: invariant failure\n");
         return 1;
     }
-    (void)printf("fuzz-project: OK (%zu project, %zu settings cases)\n",
-                 iterations, iterations / 4u + 1u);
+    (void)printf("fuzz-project: OK (%zu project, %zu settings, %zu MIDI cases)\n",
+                 iterations, iterations / 4u + 1u,
+                 iterations / 4u + 1u);
     return 0;
 }

@@ -20,6 +20,8 @@ typedef struct ktech_audio_options {
     uint32_t sample_rate;
     uint32_t latency_ms;
     bool offline;
+    bool arrangement;
+    bool bypass_master;
 } ktech_audio_options;
 
 typedef struct ktech_audio_status {
@@ -30,11 +32,15 @@ typedef struct ktech_audio_status {
     uint32_t sample_rate;
     uint32_t latency_ms;
     uint32_t pending_generation;
+    uint32_t soundbank_mask;
     uint16_t peak_left;
     uint16_t peak_right;
+    uint16_t bus_peak_left[KTECH_BUS_CAPACITY];
+    uint16_t bus_peak_right[KTECH_BUS_CAPACITY];
     uint8_t scene;
     uint8_t soundbank_count;
     bool audible;
+    bool arrangement;
     bool offline;
     bool pending;
     bool paused;
@@ -53,6 +59,10 @@ void ktech_audio_free(ktech_audio *audio);
 bool ktech_audio_publish(ktech_audio *audio, const ktech_project *project,
                          uint8_t scene, ktech_launch_quantization boundary,
                          bool restart, char *error, size_t error_size);
+bool ktech_audio_publish_arrangement(
+    ktech_audio *audio, const ktech_project *project,
+    ktech_launch_quantization boundary, bool restart,
+    char *error, size_t error_size);
 bool ktech_audio_update_mix(ktech_audio *audio,
                             const ktech_project *project, uint8_t scene);
 void ktech_audio_update_dsp(ktech_audio *audio,
@@ -61,6 +71,8 @@ void ktech_audio_update_dsp(ktech_audio *audio,
 bool ktech_audio_toggle_play(ktech_audio *audio);
 bool ktech_audio_stop(ktech_audio *audio);
 bool ktech_audio_restart(ktech_audio *audio);
+bool ktech_audio_audition(ktech_audio *audio, ktech_role role, uint8_t note,
+                          char *error, size_t error_size);
 
 /* Reclaim acknowledged snapshots, queue deferred bar launches, and degrade a
  * dead sink to editable no-audio state. Call from the control thread. */

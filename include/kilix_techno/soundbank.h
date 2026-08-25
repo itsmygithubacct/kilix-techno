@@ -27,6 +27,9 @@ const chipseq_pcm *ktech_soundbank_pcm(const ktech_soundbank *bank,
 bool ktech_soundbank_role_available(const ktech_soundbank *bank,
                                     ktech_role role);
 uint8_t ktech_soundbank_installed_count(const ktech_soundbank *bank);
+uint32_t ktech_soundbank_installed_mask(const ktech_soundbank *bank);
+const char *ktech_soundbank_role_bank(ktech_role role);
+int ktech_soundbank_role_bank_index(ktech_role role);
 
 #ifdef __cplusplus
 }

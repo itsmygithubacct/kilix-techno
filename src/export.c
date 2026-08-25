@@ -1,10 +1,6 @@
 #include "kilix_techno/export.h"
 
-#include "kilix_techno/compile.h"
-#include "kilix_techno/dsp.h"
-#include "kilix_techno/soundbank.h"
-
-#include "chip_sequencer.h"
+#include "kilix_techno/audio.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -37,9 +33,35 @@ void ktech_export_options_init(ktech_export_options *options)
     if (!options) return;
     options->sample_rate = 44100u;
     options->bars = 4u;
+    options->tail_ms = 0u;
     options->scene = 0u;
+    options->bit_depth = 16u;
+    options->arrangement = false;
+    options->normalize = false;
+    options->include_master = true;
     options->replace_existing = false;
     options->cancel = NULL;
+}
+
+bool ktech_export_options_apply_preset(ktech_export_options *options,
+                                       const ktech_export_preset *preset,
+                                       char *error, size_t error_size)
+{
+    if (!options || !preset || preset->format >= KTECH_EXPORT_FORMAT_COUNT ||
+        (preset->bit_depth != 16u && preset->bit_depth != 24u &&
+         preset->bit_depth != 32u) || preset->normalize > 1u ||
+        preset->include_master > 1u || preset->bars == 0u ||
+        preset->bars > KTECH_SONG_BAR_CAPACITY || preset->tail_ms > 10000u) {
+        set_error(error, error_size, "invalid export preset");
+        return false;
+    }
+    options->bars = preset->bars;
+    options->tail_ms = preset->tail_ms;
+    options->bit_depth = preset->bit_depth;
+    options->normalize = preset->normalize != 0u;
+    options->include_master = preset->include_master != 0u;
+    if (error && error_size > 0u) error[0] = '\0';
+    return true;
 }
 
 static bool valid_component(const char *component)
@@ -108,8 +130,9 @@ static void put_u32(uint8_t *bytes, uint32_t value)
 }
 
 static void make_wav_header(uint8_t header[44], uint32_t sample_rate,
-                            uint32_t data_bytes)
+                            uint32_t data_bytes, uint8_t bit_depth)
 {
+    uint16_t frame_bytes = (uint16_t)(2u * (unsigned)bit_depth / 8u);
     memset(header, 0, 44u);
     memcpy(header, "RIFF", 4u);
     put_u32(header + 4u, data_bytes + 36u);
@@ -118,9 +141,9 @@ static void make_wav_header(uint8_t header[44], uint32_t sample_rate,
     put_u16(header + 20u, 1u);
     put_u16(header + 22u, 2u);
     put_u32(header + 24u, sample_rate);
-    put_u32(header + 28u, sample_rate * 4u);
-    put_u16(header + 32u, 4u);
-    put_u16(header + 34u, 16u);
+    put_u32(header + 28u, sample_rate * frame_bytes);
+    put_u16(header + 32u, frame_bytes);
+    put_u16(header + 34u, bit_depth);
     memcpy(header + 36u, "data", 4u);
     put_u32(header + 40u, data_bytes);
 }
@@ -142,23 +165,6 @@ static bool write_all(int descriptor, const void *data, size_t size)
     return true;
 }
 
-static void set_channel_mix(chipseq *sequence, const ktech_scene *scene)
-{
-    chipseq_channel_mix mix;
-    chipseq_channel_mix_init(&mix);
-    bool any_solo = false;
-    for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track)
-        any_solo = any_solo || scene->tracks[track].solo != 0u;
-    for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
-        const ktech_track *source = &scene->tracks[track];
-        mix.gain[track] = (float)source->level * (1.0f / 100.0f);
-        mix.pan[track] = source->pan;
-        if (source->mute != 0u || (any_solo && source->solo == 0u))
-            mix.mute_mask |= (uint8_t)(1u << track);
-    }
-    (void)chipseq_music_set_channel_mix(sequence, &mix);
-}
-
 static uint64_t hash_samples(uint64_t hash, const int16_t *samples,
                              size_t count)
 {
@@ -168,6 +174,68 @@ static uint64_t hash_samples(uint64_t hash, const int16_t *samples,
         hash = (hash ^ (uint8_t)(value >> 8)) * UINT64_C(1099511628211);
     }
     return hash;
+}
+
+static ktech_audio *create_offline_audio(const ktech_project *project,
+                                         const ktech_export_options *options,
+                                         char *error, size_t error_size)
+{
+    ktech_audio_options audio_options;
+    ktech_audio_options_init(&audio_options);
+    audio_options.sample_rate = options->sample_rate;
+    audio_options.offline = true;
+    audio_options.arrangement = options->arrangement;
+    audio_options.bypass_master = !options->include_master;
+    return ktech_audio_create(project, &audio_options, error, error_size);
+}
+
+static bool measure_peak(const ktech_project *project,
+                         const ktech_export_options *options,
+                         uint64_t musical_frames, uint64_t frames,
+                         uint32_t *peak, char *error, size_t error_size)
+{
+    *peak = 0u;
+    ktech_audio *audio = create_offline_audio(project, options,
+                                              error, error_size);
+    if (!audio) return false;
+    int16_t samples[EXPORT_BLOCK_FRAMES * 2u];
+    uint64_t done = 0u;
+    bool stopped = false;
+    bool ok = true;
+    while (done < frames) {
+        if (options->cancel &&
+            atomic_load_explicit(options->cancel, memory_order_acquire)) {
+            ok = false;
+            errno = ECANCELED;
+            break;
+        }
+        if (!stopped && done == musical_frames) {
+            ok = ktech_audio_stop(audio);
+            stopped = true;
+            if (!ok) break;
+        }
+        uint64_t remaining = frames - done;
+        if (!stopped && done < musical_frames &&
+            remaining > musical_frames - done)
+            remaining = musical_frames - done;
+        size_t chunk = remaining > EXPORT_BLOCK_FRAMES ?
+            EXPORT_BLOCK_FRAMES : (size_t)remaining;
+        ktech_audio_poll(audio);
+        ktech_audio_mix(audio, samples, chunk);
+        for (size_t index = 0u; index < chunk * 2u; ++index) {
+            int32_t value = samples[index];
+            uint32_t magnitude = (uint32_t)(value < 0 ? -value : value);
+            if (magnitude > *peak) *peak = magnitude;
+        }
+        done += chunk;
+    }
+    ktech_audio_free(audio);
+    if (!ok) {
+        set_error(error, error_size, "normalization pass failed: %s",
+                  strerror(errno ? errno : EIO));
+        return false;
+    }
+    return true;
 }
 
 bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
@@ -183,66 +251,48 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
     if (!project || !ktech_project_validate(project, error, error_size) ||
         options->sample_rate < 8000u || options->sample_rate > 192000u ||
         options->bars == 0u || options->bars > 256u ||
-        options->scene >= KTECH_SCENE_COUNT) {
+        options->tail_ms > 10000u ||
+        (options->bit_depth != 16u && options->bit_depth != 24u &&
+         options->bit_depth != 32u) ||
+        options->scene >= KTECH_SCENE_COUNT ||
+        (options->arrangement && project->arrangement_count == 0u)) {
         set_error(error, error_size, "invalid export options");
         return false;
     }
+    uint16_t render_bars = options->arrangement ?
+        ktech_project_arrangement_bars(project) : options->bars;
     uint64_t numerator = (uint64_t)options->sample_rate * 60u * 4u *
-                         options->bars;
-    uint64_t frames = (numerator + project->tempo - 1u) / project->tempo;
-    if (frames > (UINT32_MAX - 36u) / 4u) {
+                         render_bars;
+    uint64_t musical_frames = (numerator + project->tempo - 1u) /
+                              project->tempo;
+    uint64_t tail_frames = ((uint64_t)options->sample_rate *
+                            options->tail_ms + 999u) / 1000u;
+    uint64_t frames = musical_frames + tail_frames;
+    unsigned frame_bytes = 2u * (unsigned)options->bit_depth / 8u;
+    if (frames > (UINT32_MAX - 36u) / frame_bytes) {
         set_error(error, error_size, "export exceeds RIFF size limit");
         return false;
     }
-    uint32_t data_bytes = (uint32_t)(frames * 4u);
+    uint32_t data_bytes = (uint32_t)(frames * frame_bytes);
 
-    char compile_error[160];
-    ktech_soundbank *soundbank = ktech_soundbank_load(
-        options->sample_rate, NULL, 0u);
-    ktech_compiled *compiled = soundbank ? ktech_compile_scene_with_bank(
-        project, options->scene, soundbank, compile_error,
-        sizeof compile_error) : NULL;
-    if (!compiled) {
-        if (soundbank)
-            set_error(error, error_size, "%s", compile_error);
-        else
-            set_error(error, error_size, "cannot load sound banks");
-        ktech_soundbank_free(soundbank);
+    ktech_project *render_project = malloc(sizeof *render_project);
+    if (!render_project) {
+        set_error(error, error_size, "cannot allocate offline project");
         return false;
     }
-    chipseq_options sequence_options;
-    chipseq_options_init(&sequence_options);
-    sequence_options.sample_rate = options->sample_rate;
-    chipseq sequence;
-    ktech_dsp dsp;
-    bool sequence_live = chipseq_init(&sequence, &sequence_options);
-    bool dsp_live = ktech_dsp_init(&dsp, options->sample_rate);
-    if (!sequence_live || !dsp_live) {
-        if (sequence_live) chipseq_shutdown(&sequence);
-        if (dsp_live) ktech_dsp_free(&dsp);
-        ktech_compiled_free(compiled);
-        ktech_soundbank_free(soundbank);
-        set_error(error, error_size, "cannot initialize offline renderer");
+    *render_project = *project;
+    render_project->active_scene = options->scene;
+    uint32_t normalization_peak = 0u;
+    if (options->normalize &&
+        !measure_peak(render_project, options, musical_frames, frames,
+                      &normalization_peak, error, error_size)) {
+        free(render_project);
         return false;
     }
-    char song_error[160] = {0};
-    bool started = chipseq_music_set_swing(&sequence, project->swing);
-    if (started)
-        started = chipseq_music_play(&sequence,
-                                     ktech_compiled_song(compiled), true,
-                                     song_error, sizeof song_error);
-    if (started) {
-        set_channel_mix(&sequence, &project->scenes[options->scene]);
-        chipseq_flush_commands(&sequence);
-    }
-    ktech_dsp_configure(&dsp, project);
-    if (!started) {
-        chipseq_shutdown(&sequence);
-        ktech_dsp_free(&dsp);
-        ktech_compiled_free(compiled);
-        ktech_soundbank_free(soundbank);
-        set_error(error, error_size, "cannot start offline song: %s",
-                  song_error);
+    ktech_audio *audio = create_offline_audio(render_project, options,
+                                              error, error_size);
+    if (!audio) {
+        free(render_project);
         return false;
     }
 
@@ -250,10 +300,8 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
     int directory = open_parent_secure(absolute_path, basename,
                                        sizeof basename);
     if (directory < 0) {
-        chipseq_shutdown(&sequence);
-        ktech_dsp_free(&dsp);
-        ktech_compiled_free(compiled);
-        ktech_soundbank_free(soundbank);
+        ktech_audio_free(audio);
+        free(render_project);
         set_error(error, error_size, "unsafe export path: %s",
                   strerror(errno));
         return false;
@@ -262,10 +310,8 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
     if (fstatat(directory, basename, &status, AT_SYMLINK_NOFOLLOW) == 0) {
         if (!options->replace_existing || !S_ISREG(status.st_mode)) {
             (void)close(directory);
-            chipseq_shutdown(&sequence);
-            ktech_dsp_free(&dsp);
-            ktech_compiled_free(compiled);
-            ktech_soundbank_free(soundbank);
+            ktech_audio_free(audio);
+            free(render_project);
             set_error(error, error_size, "%s",
                       options->replace_existing ? "unsafe export target" :
                                                   "export already exists");
@@ -273,10 +319,8 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
         }
     } else if (errno != ENOENT) {
         (void)close(directory);
-        chipseq_shutdown(&sequence);
-        ktech_dsp_free(&dsp);
-        ktech_compiled_free(compiled);
-        ktech_soundbank_free(soundbank);
+        ktech_audio_free(audio);
+        free(render_project);
         set_error(error, error_size, "cannot inspect export target");
         return false;
     }
@@ -290,10 +334,8 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
     if (temporary_length < 0 ||
         (size_t)temporary_length >= sizeof temporary) {
         (void)close(directory);
-        chipseq_shutdown(&sequence);
-        ktech_dsp_free(&dsp);
-        ktech_compiled_free(compiled);
-        ktech_soundbank_free(soundbank);
+        ktech_audio_free(audio);
+        free(render_project);
         set_error(error, error_size, "export filename is too long");
         return false;
     }
@@ -303,13 +345,15 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
                             S_IRUSR | S_IWUSR);
     bool ok = descriptor >= 0;
     uint8_t header[44];
-    make_wav_header(header, options->sample_rate, data_bytes);
+    make_wav_header(header, options->sample_rate, data_bytes,
+                    options->bit_depth);
     if (ok) ok = write_all(descriptor, header, sizeof header);
 
     int16_t samples[EXPORT_BLOCK_FRAMES * 2u];
-    uint8_t little_endian[EXPORT_BLOCK_FRAMES * 4u];
+    uint8_t little_endian[EXPORT_BLOCK_FRAMES * 8u];
     uint64_t done = 0u;
     uint64_t hash = UINT64_C(14695981039346656037);
+    bool stopped_for_tail = false;
     while (ok && done < frames) {
         if (options->cancel &&
             atomic_load_explicit(options->cancel, memory_order_acquire)) {
@@ -317,17 +361,38 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
             errno = ECANCELED;
             break;
         }
-        size_t chunk = frames - done > EXPORT_BLOCK_FRAMES
-                           ? EXPORT_BLOCK_FRAMES : (size_t)(frames - done);
-        chipseq_render_s16_stereo(&sequence, samples, chunk);
-        ktech_dsp_process(&dsp, samples, chunk);
+        if (!stopped_for_tail && done == musical_frames) {
+            ok = ktech_audio_stop(audio);
+            stopped_for_tail = true;
+            if (!ok) { errno = EIO; break; }
+        }
+        uint64_t remaining = frames - done;
+        if (!stopped_for_tail && done < musical_frames &&
+            remaining > musical_frames - done)
+            remaining = musical_frames - done;
+        size_t chunk = remaining > EXPORT_BLOCK_FRAMES ?
+            EXPORT_BLOCK_FRAMES : (size_t)remaining;
+        ktech_audio_poll(audio);
+        ktech_audio_mix(audio, samples, chunk);
+        if (options->normalize && normalization_peak > 0u)
+            for (size_t index = 0u; index < chunk * 2u; ++index) {
+                int64_t scaled = (int64_t)samples[index] * INT16_MAX /
+                                 normalization_peak;
+                if (scaled > INT16_MAX) scaled = INT16_MAX;
+                if (scaled < INT16_MIN) scaled = INT16_MIN;
+                samples[index] = (int16_t)scaled;
+            }
         hash = hash_samples(hash, samples, chunk * 2u);
         for (size_t index = 0u; index < chunk * 2u; ++index) {
-            uint16_t value = (uint16_t)samples[index];
-            little_endian[index * 2u] = (uint8_t)value;
-            little_endian[index * 2u + 1u] = (uint8_t)(value >> 8);
+            int32_t expanded = samples[index];
+            unsigned sample_bytes = (unsigned)options->bit_depth / 8u;
+            if (options->bit_depth == 24u) expanded *= 256;
+            else if (options->bit_depth == 32u) expanded *= 65536;
+            for (unsigned byte = 0u; byte < sample_bytes; ++byte)
+                little_endian[index * sample_bytes + byte] =
+                    (uint8_t)((uint32_t)expanded >> (byte * 8u));
         }
-        ok = write_all(descriptor, little_endian, chunk * 4u);
+        ok = write_all(descriptor, little_endian, chunk * frame_bytes);
         done += chunk;
     }
     if (ok && fsync(descriptor) != 0) ok = false;
@@ -354,10 +419,8 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
     if (!ok || !published) (void)unlinkat(directory, temporary, 0);
     (void)close(directory);
 
-    chipseq_shutdown(&sequence);
-    ktech_dsp_free(&dsp);
-    ktech_compiled_free(compiled);
-    ktech_soundbank_free(soundbank);
+    ktech_audio_free(audio);
+    free(render_project);
     if (!ok) {
         set_error(error, error_size, "export failed: %s",
                   strerror(failure_errno ? failure_errno : EIO));
@@ -369,5 +432,116 @@ bool ktech_export_wav(const ktech_project *project, const char *absolute_path,
         info->bytes = data_bytes + 44u;
     }
     if (error && error_size) error[0] = '\0';
+    return true;
+}
+
+bool ktech_export_stems(const ktech_project *project,
+                        const char *absolute_directory,
+                        const ktech_export_options *options_value,
+                        ktech_export_info info[KTECH_TRACK_COUNT],
+                        char *error, size_t error_size)
+{
+    if (info) memset(info, 0, KTECH_TRACK_COUNT * sizeof info[0]);
+    if (!project || !absolute_directory || absolute_directory[0] != '/' ||
+        strlen(absolute_directory) >= 4000u) {
+        set_error(error, error_size, "invalid stem directory");
+        return false;
+    }
+    int directory = open(absolute_directory,
+                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (directory < 0) {
+        set_error(error, error_size, "unsafe or missing stem directory");
+        return false;
+    }
+    ktech_project *stem = malloc(sizeof *stem);
+    if (!stem) {
+        (void)close(directory);
+        set_error(error, error_size, "cannot allocate stem project");
+        return false;
+    }
+    ktech_export_options defaults;
+    ktech_export_options_init(&defaults);
+    const ktech_export_options *options = options_value ? options_value :
+                                                           &defaults;
+    if (options->replace_existing) {
+        free(stem);
+        (void)close(directory);
+        set_error(error, error_size,
+                  "atomic stem export does not replace existing files");
+        return false;
+    }
+    char final_names[KTECH_TRACK_COUNT][32];
+    char hidden_names[KTECH_TRACK_COUNT][96];
+    char hidden_paths[KTECH_TRACK_COUNT][4096];
+    static atomic_uint stem_counter;
+    unsigned counter = atomic_fetch_add_explicit(&stem_counter, 1u,
+                                                  memory_order_relaxed) + 1u;
+    bool success = true;
+    for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
+        (void)snprintf(final_names[track], sizeof final_names[track],
+                       "track-%02u.wav", (unsigned)track + 1u);
+        (void)snprintf(hidden_names[track], sizeof hidden_names[track],
+                       ".ktech-stems-%ld-%u-%02u.wav", (long)getpid(),
+                       counter, (unsigned)track + 1u);
+        int count = snprintf(hidden_paths[track], sizeof hidden_paths[track],
+                             "%s/%s", absolute_directory,
+                             hidden_names[track]);
+        struct stat status;
+        if (count < 0 || (size_t)count >= sizeof hidden_paths[track] ||
+            fstatat(directory, final_names[track], &status,
+                    AT_SYMLINK_NOFOLLOW) == 0 || errno != ENOENT) {
+            success = false;
+            set_error(error, error_size,
+                      "stem target exists or cannot be inspected");
+            break;
+        }
+    }
+    unsigned rendered = 0u;
+    unsigned published = 0u;
+    for (uint8_t selected = 0u; selected < KTECH_TRACK_COUNT; ++selected) {
+        if (!success) break;
+        *stem = *project;
+        for (uint8_t scene = 0u; scene < KTECH_SCENE_COUNT; ++scene)
+            for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
+                stem->scenes[scene].tracks[track].mute =
+                    (uint8_t)(track == selected ? 0u : 1u);
+                stem->scenes[scene].tracks[track].solo =
+                    (uint8_t)(track == selected ? 1u : 0u);
+            }
+        if (!ktech_export_wav(stem, hidden_paths[selected], options,
+                              info ? &info[selected] : NULL,
+                              error, error_size)) {
+            success = false;
+            break;
+        }
+        ++rendered;
+    }
+    for (uint8_t selected = 0u;
+         success && selected < KTECH_TRACK_COUNT; ++selected) {
+        if (linkat(directory, hidden_names[selected], directory,
+                   final_names[selected], 0) != 0) {
+            success = false;
+            set_error(error, error_size, "cannot publish stem set: %s",
+                      strerror(errno));
+            break;
+        }
+        ++published;
+    }
+    for (unsigned selected = 0u; selected < rendered; ++selected)
+        (void)unlinkat(directory, hidden_names[selected], 0);
+    if (!success)
+        for (unsigned selected = 0u; selected < published; ++selected)
+            (void)unlinkat(directory, final_names[selected], 0);
+    if (fsync(directory) != 0 && success) {
+        success = false;
+        set_error(error, error_size, "cannot synchronize stem directory");
+        for (unsigned selected = 0u; selected < published; ++selected)
+            (void)unlinkat(directory, final_names[selected], 0);
+        (void)fsync(directory);
+    }
+    (void)close(directory);
+    free(stem);
+    if (!success) return false;
+    if (error && error_size > 0u) error[0] = '\0';
     return true;
 }

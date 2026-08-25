@@ -37,20 +37,23 @@ DEPENDENCY_LIBS := \
 	$(RASTER_DIR)/$(BUILD_DIR)/libsoft-raster.a \
 	$(STATE_DIR)/$(BUILD_DIR)/libkilix-state.a
 
-CORE_SOURCES := src/project.c src/soundbank.c src/compile.c src/actions.c src/settings.c \
-	src/dsp.c src/export.c src/audio.c src/ui.c src/cell_ui.c
+CORE_SOURCES := src/project.c src/workstation.c src/soundbank.c src/compile.c src/actions.c src/settings.c \
+	src/dsp.c src/export.c src/audio.c src/ui.c src/cell_ui.c src/lazy_install.c \
+	src/resource.c src/midi.c
 CORE_OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/%.o,$(CORE_SOURCES))
 CORE_DEPS := $(CORE_OBJECTS:.o=.d)
 TEST_BIN := $(BUILD_DIR)/test-core
 THREAD_TEST_BIN := $(BUILD_DIR)/test-thread
+REALTIME_TEST_BIN := $(BUILD_DIR)/test-realtime
 FUZZ_BIN := $(BUILD_DIR)/fuzz-project
 BENCHMARK_BIN := $(BUILD_DIR)/benchmark
 APP_OBJECTS := $(BUILD_DIR)/app.o $(BUILD_DIR)/main.o
 APP_BIN := $(BUILD_DIR)/kilix-techno
 FUZZ_ITERS ?= 5000
+QUALIFICATION_ENV := KILIX_TECHNO_SOUNDBANK_DIR=/dev/null
 
 .PHONY: all benchmark clean clean-room-check dependencies fuzz install \
-	sanitize test tsanitize
+	realtime-check sanitize test tsanitize
 
 all: $(APP_BIN)
 
@@ -84,6 +87,17 @@ $(THREAD_TEST_BIN): tests/test_thread.c $(BUILD_DIR)/lib$(PROJECT).a dependencie
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/lib$(PROJECT).a \
 		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
 
+REALTIME_WRAPS := malloc calloc realloc free pthread_mutex_lock \
+	pthread_mutex_unlock read write close open openat fopen fork execve system \
+	printf fprintf puts fputs
+comma := ,
+REALTIME_WRAP_FLAGS := $(addprefix -Wl$(comma)--wrap=,$(REALTIME_WRAPS))
+
+$(REALTIME_TEST_BIN): tests/test_realtime.c $(BUILD_DIR)/lib$(PROJECT).a dependencies
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/lib$(PROJECT).a \
+		$(DEPENDENCY_LIBS) $(LDFLAGS) $(REALTIME_WRAP_FLAGS) $(LDLIBS) \
+		$(ASSET_LDLIBS) -o $@
+
 $(FUZZ_BIN): tests/fuzz_project.c $(BUILD_DIR)/lib$(PROJECT).a dependencies
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/lib$(PROJECT).a \
 		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
@@ -93,10 +107,10 @@ $(BENCHMARK_BIN): benchmarks/benchmark.c $(BUILD_DIR)/lib$(PROJECT).a dependenci
 		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
 
 test: $(TEST_BIN) $(THREAD_TEST_BIN) $(APP_BIN)
-	$(TEST_BIN)
-	$(THREAD_TEST_BIN)
-	sh tests/test_cli.sh $(APP_BIN)
-	sh tests/test_terminal.sh $(APP_BIN)
+	$(QUALIFICATION_ENV) $(TEST_BIN)
+	$(QUALIFICATION_ENV) $(THREAD_TEST_BIN)
+	$(QUALIFICATION_ENV) sh tests/test_cli.sh $(APP_BIN)
+	$(QUALIFICATION_ENV) sh tests/test_terminal.sh $(APP_BIN)
 
 sanitize:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/sanitize \
@@ -108,13 +122,17 @@ tsanitize:
 	$(MAKE) BUILD_DIR=$(BUILD_DIR)/tsanitize \
 		CFLAGS='-O1 -g3 -fsanitize=thread -fno-omit-frame-pointer' \
 		LDFLAGS='-fsanitize=thread' $(BUILD_DIR)/tsanitize/test-thread
-	$(BUILD_DIR)/tsanitize/test-thread
+	$(QUALIFICATION_ENV) $(BUILD_DIR)/tsanitize/test-thread
 
 fuzz: $(FUZZ_BIN)
 	$(FUZZ_BIN) $(FUZZ_ITERS)
 
 benchmark: $(BENCHMARK_BIN)
-	$(BENCHMARK_BIN)
+	$(QUALIFICATION_ENV) $(BENCHMARK_BIN)
+
+realtime-check: $(REALTIME_TEST_BIN) $(BENCHMARK_BIN)
+	$(QUALIFICATION_ENV) $(REALTIME_TEST_BIN)
+	$(QUALIFICATION_ENV) $(BENCHMARK_BIN)
 
 clean-room-check:
 	./tools/clean-room-check.sh
@@ -127,7 +145,8 @@ install: all
 	$(INSTALL) -m 0644 LICENSE THIRD_PARTY.md \
 		$(DESTDIR)$(PREFIX)/share/licenses/$(PROJECT)/
 	$(INSTALL) -m 0644 README.md docs/ARCHITECTURE.md \
-		docs/PROJECT-FORMAT.md docs/PROVENANCE.md docs/SOUNDBANKS.md \
+		docs/PROJECT-FORMAT.md docs/PROVENANCE.md \
+		docs/SOUNDBANKS.md \
 		$(DESTDIR)$(PREFIX)/share/doc/$(PROJECT)/
 
 clean:

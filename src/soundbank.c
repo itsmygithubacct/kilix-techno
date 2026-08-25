@@ -300,3 +300,22 @@ uint8_t ktech_soundbank_installed_count(const ktech_soundbank *bank)
         if ((bank->installed_mask & (UINT32_C(1) << index)) != 0u) ++count;
     return count;
 }
+
+uint32_t ktech_soundbank_installed_mask(const ktech_soundbank *bank)
+{
+    return bank ? bank->installed_mask : 0u;
+}
+
+const char *ktech_soundbank_role_bank(ktech_role role)
+{
+    if (role < KTECH_NATIVE_ROLE_COUNT || role >= KTECH_ROLE_COUNT)
+        return NULL;
+    return sample_specs[(unsigned)role - KTECH_NATIVE_ROLE_COUNT].bank;
+}
+
+int ktech_soundbank_role_bank_index(ktech_role role)
+{
+    if (role < KTECH_NATIVE_ROLE_COUNT || role >= KTECH_ROLE_COUNT)
+        return -1;
+    return sample_specs[(unsigned)role - KTECH_NATIVE_ROLE_COUNT].bank_index;
+}

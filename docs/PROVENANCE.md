@@ -23,7 +23,13 @@ declared-CC0 media bytes and license metadata; no Ongenet application source,
 interface, presets, or project data is copied. Test arrangements are
 intentionally short and original.
 
-`make clean-room-check` scans application-owned tracked paths for excluded web
-and media source types, rejects unexpected submodule pins or license digests,
-and invokes the fleet repository-hygiene gate. Dependency trees are checked as
+`make clean-room-check` scans application-owned tracked and untracked paths for
+excluded web and media source types. It rejects unlisted, missing, dirty, or
+unexpected direct submodules and verifies every pinned root-license SHA-256 in
+`packaging/dependency-provenance.tsv`. Dependency trees are checked as
 dependencies, not treated as application-authored content.
+
+Research and design records are intentionally maintained outside the
+publication repository. The shipped gate validates the self-contained release
+tree and its dependency evidence; mechanical validation is not presented as
+proof of independent authorship.

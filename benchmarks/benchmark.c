@@ -27,22 +27,25 @@ static int compare_u64(const void *left_value, const void *right_value)
 
 int main(void)
 {
-    enum { DECODE_RUNS = 200, UI_RUNS = 100, AUDIO_RUNS = 1000,
+    enum { DECODE_RUNS = 200, UI_RUNS = 100, AUDIO_RUNS = 10000,
            AUDIO_FRAMES = 512 };
     ktech_project project;
     ktech_project_init(&project, UINT32_C(0x62656e63));
-    uint8_t encoded[KTECH_PROJECT_ENCODED_MAX];
+    uint8_t *encoded = malloc(KTECH_PROJECT_ENCODED_MAX);
+    if (!encoded) return 1;
     size_t encoded_size;
-    if (ktech_project_encode(&project, encoded, sizeof encoded,
-                             &encoded_size) != KTECH_PROJECT_OK)
+    if (ktech_project_encode(&project, encoded, KTECH_PROJECT_ENCODED_MAX,
+                             &encoded_size) != KTECH_PROJECT_OK) {
+        free(encoded);
         return 1;
+    }
 
     uint64_t begin = nanoseconds();
     char error[160];
     ktech_compiled *compiled = ktech_compile_scene(&project, 0u,
                                                     error, sizeof error);
     uint64_t compile_ns = nanoseconds() - begin;
-    if (!compiled) return 1;
+    if (!compiled) { free(encoded); return 1; }
     ktech_compiled_free(compiled);
 
     begin = nanoseconds();
@@ -50,9 +53,10 @@ int main(void)
         ktech_project decoded;
         if (ktech_project_decode(&decoded, encoded, encoded_size) !=
             KTECH_PROJECT_OK)
-            return 1;
+            { free(encoded); return 1; }
     }
     uint64_t decode_ns = (nanoseconds() - begin) / DECODE_RUNS;
+    free(encoded);
 
     ktech_editor *editor = ktech_editor_create(&project);
     sr_canvas canvas;
@@ -85,24 +89,35 @@ int main(void)
     ktech_audio_free(audio);
     qsort(samples_ns, AUDIO_RUNS, sizeof samples_ns[0], compare_u64);
     uint64_t p99_ns = samples_ns[(AUDIO_RUNS * 99u) / 100u];
+    uint64_t max_ns = samples_ns[AUDIO_RUNS - 1u];
     uint64_t block_ns = (uint64_t)AUDIO_FRAMES * UINT64_C(1000000000) /
                         UINT64_C(44100);
 
     (void)printf("compile_scene_ns=%llu\nproject_decode_ns=%llu\n"
                  "ui_1000x640_ns=%llu\naudio_512_p99_ns=%llu\n"
+                 "audio_512_max_ns=%llu\n"
                  "audio_block_budget_ns=%llu\naudio_budget_percent=%.2f\n",
                  (unsigned long long)compile_ns,
                  (unsigned long long)decode_ns,
                  (unsigned long long)ui_ns,
                  (unsigned long long)p99_ns,
+                 (unsigned long long)max_ns,
                  (unsigned long long)block_ns,
                  block_ns ? (double)p99_ns * 100.0 / (double)block_ns : 0.0);
     if (block_ns == 0u || p99_ns > block_ns / 4u) {
         (void)fprintf(stderr, "benchmark: audio p99 exceeds 25%% budget\n");
         return 1;
     }
+    if (max_ns > block_ns) {
+        (void)fprintf(stderr, "benchmark: audio maximum misses deadline\n");
+        return 1;
+    }
     if (ui_ns > UINT64_C(33333333)) {
         (void)fprintf(stderr, "benchmark: UI render misses 30 Hz budget\n");
+        return 1;
+    }
+    if (compile_ns > UINT64_C(5000000) || decode_ns > UINT64_C(5000000)) {
+        (void)fprintf(stderr, "benchmark: compile or decode exceeds 5 ms\n");
         return 1;
     }
     return 0;

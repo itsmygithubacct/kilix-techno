@@ -3,8 +3,11 @@
 #include "kilix_techno/actions.h"
 #include "kilix_techno/audio.h"
 #include "kilix_techno/export.h"
+#include "kilix_techno/lazy_install.h"
+#include "kilix_techno/midi.h"
 #include "kilix_techno/project.h"
 #include "kilix_techno/settings.h"
+#include "kilix_techno/soundbank.h"
 #include "kilix_techno/ui.h"
 
 #include "kitty_input_posix.h"
@@ -61,9 +64,12 @@ typedef struct app_state {
     uint8_t deferred_scene;
     uint8_t deferred_boundary;
     ktech_ui_context_menu context_menu;
+    ktech_lazy_install lazy_install;
     bool pointer_drag_active;
     bool pointer_drag_right;
     bool pointer_drag_enabled;
+    bool pointer_select_active;
+    bool pointer_piano_active;
     bool pointer_paint_started;
     bool pointer_right_pending;
     uint8_t pointer_drag_track;
@@ -367,6 +373,138 @@ static void dispatch_action(app_state *app, const ktech_cli_options *cli,
 static void dispatch_key(app_state *app, const ktech_cli_options *cli,
                          const kittykb_event *key)
 {
+    if (!app || !key || key->action == KITTYKB_ACTION_RELEASE) return;
+    uint32_t modifiers = key->modifiers &
+        (KITTYKB_MOD_SHIFT | KITTYKB_MOD_ALT | KITTYKB_MOD_CTRL);
+    uint32_t letter = key->key;
+    if (letter >= (uint32_t)'A' && letter <= (uint32_t)'Z')
+        letter += (uint32_t)('a' - 'A');
+    if (modifiers == 0u && letter >= (uint32_t)'1' &&
+        letter <= (uint32_t)'4') {
+        (void)ktech_editor_set_view(
+            app->editor, (ktech_editor_view)(letter - (uint32_t)'1'));
+        static const char *const names[] = {
+            "Step grid", "Piano roll", "Arrangement", "Mixer"
+        };
+        set_message(app, names[letter - (uint32_t)'1']);
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_CTRL) != 0u && letter == (uint32_t)'c') {
+        set_message(app, ktech_editor_copy_range(app->editor) ?
+                         "Selection copied" : "Select tiles before copying");
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_CTRL) != 0u && letter == (uint32_t)'x') {
+        if (ktech_editor_cut_range(app->editor)) {
+            request_publication(app, false);
+            set_message(app, "Selection cut");
+        } else set_message(app, "Select tiles before cutting");
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_CTRL) != 0u && letter == (uint32_t)'v') {
+        if (ktech_editor_paste_range(app->editor,
+                                     ktech_editor_track(app->editor),
+                                     ktech_editor_step(app->editor))) {
+            request_publication(app, false);
+            set_message(app, "Selection pasted");
+        } else set_message(app, "Clipboard does not fit here");
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_CTRL) != 0u && letter == (uint32_t)'p') {
+        char name[KTECH_PATTERN_NAME_CAPACITY];
+        const ktech_project *project =
+            ktech_editor_project_const(app->editor);
+        (void)snprintf(name, sizeof name, "Pattern %u",
+                       (unsigned)project->pattern_count + 1u);
+        if (ktech_editor_create_pattern(app->editor, name, NULL)) {
+            request_publication(app, false);
+            set_message(app, "Reusable linked pattern created");
+        } else set_message(app, "Pattern capacity reached");
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_CTRL) != 0u && letter == (uint32_t)'d') {
+        bool linked = (modifiers & KITTYKB_MOD_SHIFT) != 0u;
+        if (ktech_editor_duplicate_pattern(app->editor, linked, NULL)) {
+            if (!linked) request_publication(app, false);
+            set_message(app, linked ? "Linked pattern reference retained" :
+                                      "Independent pattern copy created");
+        } else {
+            set_message(app, "Create a reusable pattern with Ctrl+P first");
+        }
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_ALT) != 0u && letter == (uint32_t)'a') {
+        if (ktech_editor_append_arrangement(app->editor, 1u))
+            set_message(app, "Scene appended to arrangement");
+        else
+            set_message(app, "Arrangement is full or at 256 bars");
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_ALT) != 0u &&
+        key->key == KITTYKB_KEY_ENTER) {
+        const ktech_project *project =
+            ktech_editor_project_const(app->editor);
+        char error[128];
+        if (ktech_audio_publish_arrangement(
+                app->audio, project,
+                (ktech_launch_quantization)project->launch_quantization,
+                true, error, sizeof error))
+            set_message(app, "Arrangement queued for playback");
+        else
+            set_message(app, error);
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_SHIFT) != 0u &&
+        (key->key == KITTYKB_KEY_LEFT || key->key == KITTYKB_KEY_RIGHT ||
+         key->key == KITTYKB_KEY_UP || key->key == KITTYKB_KEY_DOWN)) {
+        ktech_step_range range;
+        if (!ktech_editor_range(app->editor, &range)) {
+            uint8_t track = ktech_editor_track(app->editor);
+            uint8_t step = ktech_editor_step(app->editor);
+            range = (ktech_step_range){track, track, step, step};
+        }
+        if (key->key == KITTYKB_KEY_LEFT && range.first_step > 0u)
+            --range.first_step;
+        else if (key->key == KITTYKB_KEY_RIGHT &&
+                 range.last_step + 1u < KTECH_STEP_COUNT)
+            ++range.last_step;
+        else if (key->key == KITTYKB_KEY_UP && range.first_track > 0u)
+            --range.first_track;
+        else if (key->key == KITTYKB_KEY_DOWN &&
+                 range.last_track + 1u < KTECH_TRACK_COUNT)
+            ++range.last_track;
+        (void)ktech_editor_select_range(app->editor,
+                                        range.first_track,
+                                        range.first_step,
+                                        range.last_track,
+                                        range.last_step);
+        return;
+    }
+    if ((modifiers & KITTYKB_MOD_ALT) != 0u) {
+        bool changed = false;
+        const char *message = "Selection tool applied";
+        if (letter == (uint32_t)'f')
+            changed = ktech_editor_apply_tool(app->editor, KTECH_TOOL_FILL);
+        else if (letter == (uint32_t)'c')
+            changed = ktech_editor_apply_tool(app->editor, KTECH_TOOL_CLEAR);
+        else if (letter == (uint32_t)'i')
+            changed = ktech_editor_apply_tool(app->editor, KTECH_TOOL_INVERT);
+        else if (letter == (uint32_t)'m')
+            changed = ktech_editor_apply_tool(app->editor, KTECH_TOOL_MIRROR);
+        else if (key->key == KITTYKB_KEY_LEFT)
+            changed = ktech_editor_apply_tool(app->editor,
+                                              KTECH_TOOL_ROTATE_LEFT);
+        else if (key->key == KITTYKB_KEY_RIGHT)
+            changed = ktech_editor_apply_tool(app->editor,
+                                              KTECH_TOOL_ROTATE_RIGHT);
+        else
+            message = NULL;
+        if (message) {
+            if (changed) request_publication(app, false);
+            set_message(app, changed ? message : "Select tiles first");
+            return;
+        }
+    }
     kittyin_action_event actions[4];
     size_t count = ktech_actions_map_key(&app->action_map, key,
                                          actions, 4u);
@@ -385,6 +523,8 @@ static void pointer_gesture_finish(app_state *app)
     if (app->pointer_paint_started)
         ktech_editor_end_step_paint(app->editor);
     app->pointer_drag_active = false;
+    app->pointer_select_active = false;
+    app->pointer_piano_active = false;
     app->pointer_drag_right = false;
     app->pointer_paint_started = false;
     app->pointer_right_pending = false;
@@ -403,9 +543,15 @@ static void context_menu_open(app_state *app, uint8_t track, int x, int y)
     app->context_menu.page = KTECH_UI_CONTEXT_ACTIONS;
     app->context_menu.track = track;
     app->context_menu.group = 0u;
+    app->context_menu.selected = 0u;
+    app->context_menu.query[0] = '\0';
+    app->context_menu.query_length = 0u;
+    ktech_audio_status status;
+    ktech_audio_get_status(app->audio, &status);
+    app->context_menu.installed_banks = status.soundbank_mask;
     app->context_menu.anchor_x = x;
     app->context_menu.anchor_y = y;
-    set_message(app, "Track options open; choose an instrument or action");
+    set_message(app, "Track options open; press / to search instruments");
 }
 
 static bool pointer_step_set(app_state *app, uint8_t track, uint8_t step,
@@ -420,8 +566,102 @@ static bool pointer_step_set(app_state *app, uint8_t track, uint8_t step,
     return valid;
 }
 
+static bool pointer_piano_set(app_state *app, uint8_t step, uint8_t note,
+                              bool enabled)
+{
+    if (!app) return false;
+    uint8_t track = ktech_editor_track(app->editor);
+    uint64_t revision = ktech_editor_revision(app->editor);
+    bool valid = enabled ?
+        ktech_editor_set_step_note(app->editor, track, step, note) : true;
+    if (valid)
+        valid = ktech_editor_set_step_enabled(app->editor, track, step,
+                                              enabled);
+    if (valid && ktech_editor_revision(app->editor) != revision)
+        request_publication(app, false);
+    return valid;
+}
+
+static bool pointer_piano_begin(app_state *app, uint8_t step, uint8_t note,
+                                uint8_t button, uint32_t modifiers)
+{
+    if (!app || (button != KTECH_MOUSE_LEFT &&
+                 button != KTECH_MOUSE_RIGHT)) return false;
+    pointer_gesture_finish(app);
+    context_menu_close(app);
+    app->pointer_drag_active = true;
+    app->pointer_piano_active = true;
+    app->pointer_drag_right = button == KTECH_MOUSE_RIGHT;
+    app->pointer_drag_track = ktech_editor_track(app->editor);
+    app->pointer_drag_step = step;
+    app->pointer_press_track = app->pointer_drag_track;
+    app->pointer_press_step = step;
+    if (button == KTECH_MOUSE_LEFT &&
+        (modifiers & KITTYKB_MOD_SHIFT) != 0u) {
+        app->pointer_select_active = true;
+        return ktech_editor_select_range(app->editor,
+                                         app->pointer_drag_track, step,
+                                         app->pointer_drag_track, step);
+    }
+    ktech_editor_begin_step_paint(app->editor);
+    app->pointer_paint_started = true;
+    return pointer_piano_set(app, step, note,
+                             button == KTECH_MOUSE_LEFT);
+}
+
+static void pointer_piano_drag(app_state *app, uint8_t step, uint8_t note)
+{
+    if (!app || !app->pointer_drag_active || !app->pointer_piano_active ||
+        step == app->pointer_drag_step) return;
+    if (app->pointer_select_active) {
+        (void)ktech_editor_select_range(app->editor,
+                                        app->pointer_press_track,
+                                        app->pointer_press_step,
+                                        app->pointer_press_track, step);
+    } else {
+        (void)pointer_piano_set(app, step, note,
+                               !app->pointer_drag_right);
+    }
+    app->pointer_drag_step = step;
+}
+
+static bool pixel_hit_piano(const app_state *app, int width, int height,
+                            int x, int y, uint8_t *step, uint8_t *note)
+{
+    if (!app || ktech_editor_view_current(app->editor) !=
+                    KTECH_VIEW_PIANO_ROLL) return false;
+    const ktech_project *project = ktech_editor_project_const(app->editor);
+    uint8_t track_index = ktech_editor_track(app->editor);
+    ktech_track scratch;
+    const ktech_track *track = ktech_project_resolve_track(
+        project, ktech_editor_scene(app->editor), track_index, &scratch);
+    if (!track) return false;
+    uint8_t selected = ktech_editor_step(app->editor);
+    uint8_t center = track->steps[selected].note;
+    uint8_t low = center > 5u ? (uint8_t)(center - 5u) : 0u;
+    if (low > 116u) low = 116u;
+    int columns = width >= 900 ? 16 : 8;
+    int page = selected / columns * columns;
+    int left = 72;
+    int top = 74;
+    int cell_width = (width - left - 18) / columns;
+    int cell_height = (height - top - 86) / 12;
+    if (cell_height < 18) cell_height = 18;
+    if (cell_width <= 0 || x < left ||
+        x >= left + columns * cell_width || y < top ||
+        y >= top + 12 * cell_height) return false;
+    int found_step = page + (x - left) / cell_width;
+    int found_note = (int)low + 11 - (y - top) / cell_height;
+    if (found_step < 0 || found_step >= track->length ||
+        found_note < 0 || found_note > 127) return false;
+    if (step) *step = (uint8_t)found_step;
+    if (note) *note = (uint8_t)found_note;
+    return true;
+}
+
 static bool pointer_step_begin(app_state *app, uint8_t track, uint8_t step,
-                               uint8_t button, int x, int y)
+                               uint8_t button, uint32_t modifiers,
+                               int x, int y)
 {
     if (!app || (button != KTECH_MOUSE_LEFT &&
                  button != KTECH_MOUSE_RIGHT) || track >= KTECH_TRACK_COUNT)
@@ -440,6 +680,13 @@ static bool pointer_step_begin(app_state *app, uint8_t track, uint8_t step,
     app->pointer_press_step = step;
     app->pointer_press_x = x;
     app->pointer_press_y = y;
+    if (button == KTECH_MOUSE_LEFT &&
+        (modifiers & KITTYKB_MOD_SHIFT) != 0u) {
+        app->pointer_select_active = true;
+        app->pointer_drag_enabled = false;
+        return ktech_editor_select_range(app->editor, track, step,
+                                         track, step);
+    }
     if (app->pointer_drag_right) {
         app->pointer_drag_enabled = false;
         app->pointer_right_pending = true;
@@ -457,6 +704,15 @@ static void pointer_step_drag(app_state *app, uint8_t track, uint8_t step)
         (track == app->pointer_drag_track &&
          step == app->pointer_drag_step))
         return;
+    if (app->pointer_select_active) {
+        (void)ktech_editor_select_range(app->editor,
+                                        app->pointer_press_track,
+                                        app->pointer_press_step,
+                                        track, step);
+        app->pointer_drag_track = track;
+        app->pointer_drag_step = step;
+        return;
+    }
     if (app->pointer_drag_right && !app->pointer_paint_started) {
         ktech_editor_begin_step_paint(app->editor);
         app->pointer_paint_started = true;
@@ -554,6 +810,37 @@ static void pointer_scene(app_state *app, const ktech_cli_options *cli,
     }
 }
 
+static void context_select_role(app_state *app, uint8_t track,
+                                ktech_role role)
+{
+    uint64_t revision = ktech_editor_revision(app->editor);
+    if (ktech_editor_set_track_role(app->editor, track, role) &&
+        ktech_editor_revision(app->editor) != revision)
+        request_publication(app, false);
+    char message[160];
+    (void)snprintf(message, sizeof message, "Track %u instrument: %s",
+                   (unsigned)track + 1u, ktech_role_name(role));
+    set_message(app, message);
+    int bank = ktech_soundbank_role_bank_index(role);
+    bool installed = bank < 0 ||
+        (app->context_menu.installed_banks &
+         (UINT32_C(1) << (unsigned)bank)) != 0u;
+    if (!installed && !ktech_lazy_install_running(&app->lazy_install)) {
+        char install_error[128];
+        if (ktech_lazy_install_start(&app->lazy_install, role,
+                                      install_error,
+                                      sizeof install_error)) {
+            (void)snprintf(message, sizeof message,
+                           "Installing %s; native fallback remains audible",
+                           app->lazy_install.package);
+            set_message(app, message);
+        } else {
+            set_message(app, install_error);
+        }
+    }
+    context_menu_close(app);
+}
+
 static void context_menu_activate(app_state *app,
                                   const ktech_cli_options *cli,
                                   uint8_t item)
@@ -566,6 +853,7 @@ static void context_menu_activate(app_state *app,
     if (app->context_menu.page == KTECH_UI_CONTEXT_ACTIONS) {
         if (item == 0u) {
             app->context_menu.page = KTECH_UI_CONTEXT_GROUPS;
+            app->context_menu.selected = 0u;
             return;
         }
         if (item == 1u) {
@@ -593,27 +881,117 @@ static void context_menu_activate(app_state *app,
         if (item < KTECH_UI_INSTRUMENT_GROUP_COUNT) {
             app->context_menu.group = item;
             app->context_menu.page = KTECH_UI_CONTEXT_ROLES;
+            app->context_menu.selected = 0u;
         } else {
             app->context_menu.page = KTECH_UI_CONTEXT_ACTIONS;
+            app->context_menu.selected = 0u;
         }
-    } else if (app->context_menu.page == KTECH_UI_CONTEXT_ROLES) {
+    } else if (app->context_menu.page == KTECH_UI_CONTEXT_ROLES ||
+               app->context_menu.page == KTECH_UI_CONTEXT_SEARCH) {
         ktech_role role;
-        if (ktech_ui_instrument_group_role(app->context_menu.group,
-                                           item, &role)) {
-            uint64_t revision = ktech_editor_revision(app->editor);
-            if (ktech_editor_set_track_role(app->editor, track, role) &&
-                ktech_editor_revision(app->editor) != revision)
-                request_publication(app, false);
-            char message[160];
-            (void)snprintf(message, sizeof message,
-                           "Track %u instrument: %s",
-                           (unsigned)track + 1u, ktech_role_name(role));
-            set_message(app, message);
-            context_menu_close(app);
+        if (ktech_ui_context_role(&app->context_menu, item, &role)) {
+            context_select_role(app, track, role);
         } else {
             app->context_menu.page = KTECH_UI_CONTEXT_GROUPS;
+            app->context_menu.query[0] = '\0';
+            app->context_menu.query_length = 0u;
+            app->context_menu.selected = 0u;
         }
     }
+}
+
+static bool context_menu_key(app_state *app, const ktech_cli_options *cli,
+                             const kittykb_event *key)
+{
+    if (!app || !key || app->context_menu.page == KTECH_UI_CONTEXT_CLOSED ||
+        key->action == KITTYKB_ACTION_RELEASE)
+        return false;
+    size_t count = ktech_ui_context_item_count(&app->context_menu);
+    if (count == 0u) return false;
+    bool searching = app->context_menu.page == KTECH_UI_CONTEXT_SEARCH;
+    if (key->key == KITTYKB_KEY_ESCAPE ||
+        (!searching && key->key == (uint32_t)'q')) {
+        context_menu_close(app);
+        set_message(app, "Track options closed");
+    } else if (!searching && key->key == (uint32_t)'/') {
+        app->context_menu.page = KTECH_UI_CONTEXT_SEARCH;
+        app->context_menu.query[0] = '\0';
+        app->context_menu.query_length = 0u;
+        app->context_menu.selected = 0u;
+        set_message(app, "Type part of an instrument name; Enter selects");
+    } else if (searching && key->key == KITTYKB_KEY_BACKSPACE) {
+        if (app->context_menu.query_length > 0u) {
+            --app->context_menu.query_length;
+            app->context_menu.query[app->context_menu.query_length] = '\0';
+        }
+        app->context_menu.selected = 0u;
+    } else if (key->key == KITTYKB_KEY_UP) {
+        app->context_menu.selected = app->context_menu.selected == 0u ?
+            (uint8_t)(count - 1u) :
+            (uint8_t)(app->context_menu.selected - 1u);
+    } else if (key->key == KITTYKB_KEY_DOWN) {
+        app->context_menu.selected = (uint8_t)(
+            (app->context_menu.selected + 1u) % count);
+    } else if (key->key == (uint32_t)' ' &&
+               (app->context_menu.page == KTECH_UI_CONTEXT_ROLES ||
+                app->context_menu.page == KTECH_UI_CONTEXT_SEARCH)) {
+        ktech_role role;
+        if (ktech_ui_context_role(&app->context_menu,
+                                  app->context_menu.selected, &role)) {
+            const ktech_project *project =
+                ktech_editor_project_const(app->editor);
+            const ktech_track *track =
+                &project->scenes[ktech_editor_scene(app->editor)]
+                    .tracks[app->context_menu.track];
+            uint8_t step = ktech_editor_step(app->editor);
+            uint8_t note = step < track->length ? track->steps[step].note :
+                                                 60u;
+            char error[128];
+            if (ktech_audio_audition(app->audio, role, note, error,
+                                     sizeof error)) {
+                char message[128];
+                (void)snprintf(message, sizeof message, "Preview: %s",
+                               ktech_role_name(role));
+                set_message(app, message);
+            } else {
+                set_message(app, error);
+            }
+        }
+    } else if ((key->key == (uint32_t)'f' ||
+                key->key == (uint32_t)'F') &&
+               (app->context_menu.page == KTECH_UI_CONTEXT_ROLES ||
+                app->context_menu.page == KTECH_UI_CONTEXT_SEARCH)) {
+        ktech_role role;
+        if (ktech_ui_context_role(&app->context_menu,
+                                  app->context_menu.selected, &role)) {
+            bool favorite = !ktech_editor_favorite(app->editor, role);
+            (void)ktech_editor_set_favorite(app->editor, role, favorite);
+            set_message(app, favorite ? "Instrument added to favorites" :
+                                        "Instrument removed from favorites");
+        }
+    } else if (key->key == KITTYKB_KEY_ENTER) {
+        context_menu_activate(app, cli, app->context_menu.selected);
+    } else if (key->key == KITTYKB_KEY_LEFT) {
+        if (app->context_menu.page == KTECH_UI_CONTEXT_ROLES ||
+            app->context_menu.page == KTECH_UI_CONTEXT_SEARCH)
+            app->context_menu.page = KTECH_UI_CONTEXT_GROUPS;
+        else if (app->context_menu.page == KTECH_UI_CONTEXT_GROUPS)
+            app->context_menu.page = KTECH_UI_CONTEXT_ACTIONS;
+        app->context_menu.selected = 0u;
+    } else if (key->key == KITTYKB_KEY_RIGHT) {
+        context_menu_activate(app, cli, app->context_menu.selected);
+    } else if (searching && key->modifiers == 0u &&
+               key->key >= 0x20u && key->key <= 0x7eu &&
+               app->context_menu.query_length + 1u <
+                   sizeof app->context_menu.query) {
+        app->context_menu.query[app->context_menu.query_length++] =
+            (char)key->key;
+        app->context_menu.query[app->context_menu.query_length] = '\0';
+        app->context_menu.selected = 0u;
+    } else {
+        return false;
+    }
+    return true;
 }
 
 static void poll_gamepads(app_state *app, const ktech_cli_options *cli,
@@ -638,6 +1016,17 @@ static void poll_gamepads(app_state *app, const ktech_cli_options *cli,
 static void periodic_work(app_state *app)
 {
     finish_export(app);
+    int install_status = 0;
+    ktech_lazy_install_result install_result =
+        ktech_lazy_install_poll(&app->lazy_install, &install_status);
+    if (install_result == KTECH_LAZY_SUCCEEDED)
+        set_message(app, "Soundbank installed; restart audio to load it");
+    else if (install_result == KTECH_LAZY_FAILED) {
+        char message[96];
+        (void)snprintf(message, sizeof message,
+                       "Soundbank install failed (status %d)", install_status);
+        set_message(app, message);
+    }
     if (app->audio) {
         ktech_audio_poll(app->audio);
         ktech_audio_status status;
@@ -698,14 +1087,8 @@ static void handle_pixel_event(app_state *app, const ktech_cli_options *cli,
 {
     if (event->kind == KITTYIN_EVENT_KEY) {
         pointer_gesture_finish(app);
-        if (app->context_menu.page != KTECH_UI_CONTEXT_CLOSED &&
-            event->data.key.action != KITTYKB_ACTION_RELEASE &&
-            (event->data.key.key == KITTYKB_KEY_ESCAPE ||
-             event->data.key.key == (uint32_t)'q')) {
-            context_menu_close(app);
-            set_message(app, "Track options closed");
+        if (context_menu_key(app, cli, &event->data.key))
             return;
-        }
         dispatch_key(app, cli, &event->data.key);
     } else if (event->kind == KITTYIN_EVENT_MOUSE) {
         const kittyin_mouse_event *mouse = &event->data.mouse;
@@ -742,6 +1125,18 @@ static void handle_pixel_event(app_state *app, const ktech_cli_options *cli,
         } else if (mouse->action == KITTYIN_MOUSE_RELEASE) {
             pointer_release(app, mouse->button);
         } else if (mouse->action == KITTYIN_MOUSE_MOVE) {
+            uint8_t piano_step, piano_note;
+            if (pixel_hit_piano(app, kittyts_width(session),
+                                kittyts_height(session), x, y,
+                                &piano_step, &piano_note) &&
+                app->pointer_drag_active) {
+                pointer_piano_drag(app, piano_step, piano_note);
+                return;
+            }
+            if (ktech_editor_view_current(app->editor) != KTECH_VIEW_STEPS) {
+                pointer_motion_outside_tile(app, x, y);
+                return;
+            }
             ktech_ui_layout layout;
             ktech_ui_layout_make(&layout, kittyts_width(session),
                                   kittyts_height(session), app->editor);
@@ -755,12 +1150,24 @@ static void handle_pixel_event(app_state *app, const ktech_cli_options *cli,
                    (mouse->button == KTECH_MOUSE_LEFT ||
                     mouse->button == KTECH_MOUSE_RIGHT)) {
             pointer_gesture_finish(app);
+            uint8_t piano_step, piano_note;
+            if (pixel_hit_piano(app, kittyts_width(session),
+                                kittyts_height(session), x, y,
+                                &piano_step, &piano_note)) {
+                (void)pointer_piano_begin(app, piano_step, piano_note,
+                                          mouse->button,
+                                          mouse->modifiers);
+                return;
+            }
+            if (ktech_editor_view_current(app->editor) != KTECH_VIEW_STEPS)
+                return;
             ktech_ui_layout layout;
             ktech_ui_layout_make(&layout, kittyts_width(session),
                                   kittyts_height(session), app->editor);
             uint8_t track, step;
             if (ktech_ui_hit_step(&layout, x, y, &track, &step)) {
                 (void)pointer_step_begin(app, track, step, mouse->button,
+                                         mouse->modifiers,
                                          x, y);
             } else if (ktech_ui_hit_track(&layout, x, y, &track)) {
                 pointer_track_begin(app, track, mouse->button, x, y);
@@ -932,6 +1339,35 @@ static bool cell_hit_step(const app_state *app,
     return true;
 }
 
+static bool cell_hit_piano(const app_state *app,
+                           const kittyin_mouse_event *mouse, int columns,
+                           uint8_t *step, uint8_t *note)
+{
+    if (!app || !mouse || ktech_editor_view_current(app->editor) !=
+                            KTECH_VIEW_PIANO_ROLL) return false;
+    int visible = columns >= 100 ? 16 : columns >= 72 ? 12 : 8;
+    int column = (mouse->x - 6) / 3;
+    int row = mouse->y - 2;
+    if (mouse->x < 6 || column < 0 || column >= visible ||
+        row < 0 || row >= 12) return false;
+    const ktech_project *project = ktech_editor_project_const(app->editor);
+    uint8_t track_index = ktech_editor_track(app->editor);
+    ktech_track scratch;
+    const ktech_track *track = ktech_project_resolve_track(
+        project, ktech_editor_scene(app->editor), track_index, &scratch);
+    if (!track) return false;
+    uint8_t selected = ktech_editor_step(app->editor);
+    int page = selected / visible * visible;
+    int found_step = page + column;
+    uint8_t center = track->steps[selected].note;
+    uint8_t low = center > 5u ? (uint8_t)(center - 5u) : 0u;
+    if (low > 116u) low = 116u;
+    if (found_step < 0 || found_step >= track->length) return false;
+    if (step) *step = (uint8_t)found_step;
+    if (note) *note = (uint8_t)((int)low + 11 - row);
+    return true;
+}
+
 static void handle_cell_mouse(app_state *app, const ktech_cli_options *cli,
                               const kittyin_mouse_event *mouse, int columns)
 {
@@ -967,7 +1403,17 @@ static void handle_cell_mouse(app_state *app, const ktech_cli_options *cli,
     }
     uint8_t track;
     uint8_t step;
+    uint8_t piano_note;
     if (mouse->action == KITTYIN_MOUSE_MOVE) {
+        if (cell_hit_piano(app, mouse, columns, &step, &piano_note) &&
+            app->pointer_drag_active) {
+            pointer_piano_drag(app, step, piano_note);
+            return;
+        }
+        if (ktech_editor_view_current(app->editor) != KTECH_VIEW_STEPS) {
+            pointer_motion_outside_tile(app, mouse->x, mouse->y);
+            return;
+        }
         if (cell_hit_step(app, mouse, columns, &track, &step) &&
             app->pointer_drag_active)
             pointer_step_drag(app, track, step);
@@ -981,6 +1427,12 @@ static void handle_cell_mouse(app_state *app, const ktech_cli_options *cli,
         mouse->button != KTECH_MOUSE_RIGHT)
         return;
     pointer_gesture_finish(app);
+    if (cell_hit_piano(app, mouse, columns, &step, &piano_note)) {
+        (void)pointer_piano_begin(app, step, piano_note, mouse->button,
+                                  mouse->modifiers);
+        return;
+    }
+    if (ktech_editor_view_current(app->editor) != KTECH_VIEW_STEPS) return;
     int label_width = columns >= 100 ? 19 : columns >= 72 ? 14 : 11;
     int row = mouse->y - 2;
     if (row >= 0 && row < (int)KTECH_TRACK_COUNT &&
@@ -991,6 +1443,7 @@ static void handle_cell_mouse(app_state *app, const ktech_cli_options *cli,
     }
     if (cell_hit_step(app, mouse, columns, &track, &step)) {
         (void)pointer_step_begin(app, track, step, mouse->button,
+                                 mouse->modifiers,
                                  mouse->x, mouse->y);
         return;
     }
@@ -1040,15 +1493,8 @@ static int run_cell(app_state *app, const ktech_cli_options *cli)
         while (kittyin_input_next(&terminal.input, &event)) {
             if (event.kind == KITTYIN_EVENT_KEY) {
                 pointer_gesture_finish(app);
-                if (app->context_menu.page != KTECH_UI_CONTEXT_CLOSED &&
-                    event.data.key.action != KITTYKB_ACTION_RELEASE &&
-                    (event.data.key.key == KITTYKB_KEY_ESCAPE ||
-                     event.data.key.key == (uint32_t)'q')) {
-                    context_menu_close(app);
-                    set_message(app, "Track options closed");
-                } else {
+                if (!context_menu_key(app, cli, &event.data.key))
                     dispatch_key(app, cli, &event.data.key);
-                }
             } else if (event.kind == KITTYIN_EVENT_MOUSE) {
                 handle_cell_mouse(app, cli, &event.data.mouse, columns);
             } else if (event.kind == KITTYIN_EVENT_FOCUS &&
@@ -1101,10 +1547,20 @@ static int run_headless(const ktech_cli_options *options,
             return 1;
         }
     }
-    (void)printf("Kilix Techno 0.1.0\nproject=%s\nname=%s\ntempo=%u\nscene=%u\n",
+    (void)printf("Kilix Techno 0.2.1\nproject=%s\nname=%s\ntempo=%u\nscene=%u\n",
                  path ? path : "new", project->name, project->tempo,
                  (unsigned)project->active_scene + 1u);
     return 0;
+}
+
+static const ktech_export_preset *find_export_preset(
+    const ktech_project *project, const char *name)
+{
+    if (!project || !name) return NULL;
+    for (uint8_t index = 0u; index < project->export_preset_count; ++index)
+        if (strcmp(project->export_presets[index].name, name) == 0)
+            return &project->export_presets[index];
+    return NULL;
 }
 
 static int run_export(const ktech_cli_options *options)
@@ -1116,6 +1572,22 @@ static int run_export(const ktech_cli_options *options)
         return 1;
     }
     ktech_project project;
+    char error[256];
+    if (options->operation == KTECH_CLI_IMPORT_MIDI) {
+        if (!ktech_midi_load(&project, input, error, sizeof error)) {
+            (void)fprintf(stderr, "MIDI import: %s\n", error);
+            return 1;
+        }
+        ktech_project_result saved = ktech_project_save(&project, output,
+                                                        false);
+        if (saved != KTECH_PROJECT_OK) {
+            (void)fprintf(stderr, "save: %s\n",
+                          ktech_project_result_name(saved));
+            return 1;
+        }
+        (void)printf("imported MIDI to %s\n", output);
+        return 0;
+    }
     ktech_project_result result = ktech_project_load(&project, input);
     if (result != KTECH_PROJECT_OK) {
         (void)fprintf(stderr, "load: %s\n", ktech_project_result_name(result));
@@ -1126,7 +1598,50 @@ static int run_export(const ktech_cli_options *options)
     export_options.sample_rate = options->sample_rate;
     export_options.bars = options->bars;
     export_options.scene = project.active_scene;
-    char error[256];
+    ktech_export_format format = KTECH_EXPORT_WAV;
+    if (options->operation == KTECH_CLI_EXPORT_ARRANGEMENT)
+        export_options.arrangement = true;
+    else if (options->operation == KTECH_CLI_EXPORT_STEMS)
+        format = KTECH_EXPORT_STEMS;
+    else if (options->operation == KTECH_CLI_EXPORT_MIDI)
+        format = KTECH_EXPORT_MIDI;
+    else if (options->operation == KTECH_CLI_EXPORT_PRESET) {
+        const ktech_export_preset *preset = find_export_preset(
+            &project, options->preset_name);
+        if (!preset) {
+            (void)fprintf(stderr, "export preset not found: %s\n",
+                          options->preset_name);
+            return 1;
+        }
+        if (!ktech_export_options_apply_preset(&export_options, preset,
+                                                error, sizeof error)) {
+            (void)fprintf(stderr, "export preset: %s\n", error);
+            return 1;
+        }
+        format = (ktech_export_format)preset->format;
+    }
+    if (format == KTECH_EXPORT_MIDI) {
+        if (!ktech_midi_save(&project, output, false, error, sizeof error)) {
+            (void)fprintf(stderr, "MIDI export: %s\n", error);
+            return 1;
+        }
+        (void)printf("exported MIDI to %s\n", output);
+        return 0;
+    }
+    if (format == KTECH_EXPORT_STEMS) {
+        ktech_export_info stems[KTECH_TRACK_COUNT];
+        if (!ktech_export_stems(&project, output, &export_options, stems,
+                                error, sizeof error)) {
+            (void)fprintf(stderr, "stem export: %s\n", error);
+            return 1;
+        }
+        uint64_t total = 0u;
+        for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track)
+            total += stems[track].bytes;
+        (void)printf("exported 8 stems (%llu bytes)\n",
+                     (unsigned long long)total);
+        return 0;
+    }
     ktech_export_info info;
     if (!ktech_export_wav(&project, output, &export_options, &info,
                           error, sizeof error)) {
@@ -1142,7 +1657,7 @@ static int run_export(const ktech_cli_options *options)
 int ktech_app_run(const ktech_cli_options *options)
 {
     if (!options) return 1;
-    if (options->export_input) return run_export(options);
+    if (options->operation != KTECH_CLI_RUN) return run_export(options);
 
     ktech_project project;
     char opened[4096] = {0};

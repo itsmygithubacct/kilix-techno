@@ -15,6 +15,31 @@ extern "C" {
 
 #define KTECH_UNDO_CAPACITY 32u
 
+typedef struct ktech_step_range {
+    uint8_t first_track;
+    uint8_t last_track;
+    uint8_t first_step;
+    uint8_t last_step;
+} ktech_step_range;
+
+typedef enum ktech_step_tool {
+    KTECH_TOOL_FILL = 0,
+    KTECH_TOOL_CLEAR,
+    KTECH_TOOL_ROTATE_LEFT,
+    KTECH_TOOL_ROTATE_RIGHT,
+    KTECH_TOOL_INVERT,
+    KTECH_TOOL_MIRROR,
+    KTECH_TOOL_COUNT
+} ktech_step_tool;
+
+typedef enum ktech_editor_view {
+    KTECH_VIEW_STEPS = 0,
+    KTECH_VIEW_PIANO_ROLL,
+    KTECH_VIEW_ARRANGEMENT,
+    KTECH_VIEW_MIXER,
+    KTECH_VIEW_COUNT
+} ktech_editor_view;
+
 typedef enum ktech_edit_field {
     KTECH_FIELD_NOTE = 0,
     KTECH_FIELD_VELOCITY,
@@ -71,6 +96,8 @@ bool ktech_editor_select_step(ktech_editor *editor, uint8_t track,
                               uint8_t step, bool toggle);
 bool ktech_editor_set_step_enabled(ktech_editor *editor, uint8_t track,
                                    uint8_t step, bool enabled);
+bool ktech_editor_set_step_note(ktech_editor *editor, uint8_t track,
+                                uint8_t step, uint8_t note);
 void ktech_editor_begin_step_paint(ktech_editor *editor);
 void ktech_editor_end_step_paint(ktech_editor *editor);
 bool ktech_editor_select_track(ktech_editor *editor, uint8_t track);
@@ -86,6 +113,40 @@ uint8_t ktech_editor_scene(const ktech_editor *editor);
 ktech_edit_field ktech_editor_field(const ktech_editor *editor);
 bool ktech_editor_help_visible(const ktech_editor *editor);
 bool ktech_editor_set_tempo(ktech_editor *editor, uint16_t tempo);
+
+/* A range is inclusive and normalized when it is stored. Selection and
+ * clipboard data are editor state, not project data. Every mutating call
+ * below creates at most one history entry, even when it changes many tiles. */
+bool ktech_editor_select_range(ktech_editor *editor, uint8_t first_track,
+                               uint8_t first_step, uint8_t last_track,
+                               uint8_t last_step);
+void ktech_editor_clear_range(ktech_editor *editor);
+bool ktech_editor_range(const ktech_editor *editor,
+                        ktech_step_range *range);
+bool ktech_editor_step_selected(const ktech_editor *editor, uint8_t track,
+                                uint8_t step);
+bool ktech_editor_copy_range(ktech_editor *editor);
+bool ktech_editor_cut_range(ktech_editor *editor);
+bool ktech_editor_paste_range(ktech_editor *editor, uint8_t track,
+                              uint8_t step);
+bool ktech_editor_apply_tool(ktech_editor *editor, ktech_step_tool tool);
+bool ktech_editor_probability_scale(ktech_editor *editor, uint8_t percent);
+bool ktech_editor_velocity_ramp(ktech_editor *editor, uint8_t first,
+                                uint8_t last);
+bool ktech_editor_euclidean_fill(ktech_editor *editor, uint8_t pulses,
+                                 uint8_t rotation);
+bool ktech_editor_set_favorite(ktech_editor *editor, ktech_role role,
+                               bool favorite);
+bool ktech_editor_favorite(const ktech_editor *editor, ktech_role role);
+bool ktech_editor_create_pattern(ktech_editor *editor, const char *name,
+                                 uint8_t *pattern);
+bool ktech_editor_duplicate_pattern(ktech_editor *editor, bool linked,
+                                    uint8_t *pattern);
+bool ktech_editor_append_arrangement(ktech_editor *editor, uint8_t bars);
+ktech_editor_view ktech_editor_view_current(const ktech_editor *editor);
+bool ktech_editor_set_view(ktech_editor *editor, ktech_editor_view view);
+bool ktech_editor_paint_range_value(ktech_editor *editor,
+                                    ktech_edit_field field, uint8_t value);
 
 void ktech_tap_tempo_init(ktech_tap_tempo *tap);
 bool ktech_tap_tempo_press(ktech_tap_tempo *tap, int64_t now_ms,

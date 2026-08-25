@@ -24,6 +24,15 @@ ktech_compiled *ktech_compile_scene(const ktech_project *project,
 ktech_compiled *ktech_compile_scene_with_bank(
     const ktech_project *project, uint8_t scene, const ktech_soundbank *bank,
     char *error, size_t error_size);
+ktech_compiled *ktech_compile_audition(ktech_role role, uint8_t note,
+                                       uint16_t tempo,
+                                       const ktech_soundbank *bank,
+                                       char *error, size_t error_size);
+ktech_compiled *ktech_compile_arrangement(
+    const ktech_project *project, char *error, size_t error_size);
+ktech_compiled *ktech_compile_arrangement_with_bank(
+    const ktech_project *project, const ktech_soundbank *bank,
+    char *error, size_t error_size);
 void ktech_compiled_free(ktech_compiled *compiled);
 const chipseq_song *ktech_compiled_song(const ktech_compiled *compiled);
 uint16_t ktech_compiled_rows(const ktech_compiled *compiled);

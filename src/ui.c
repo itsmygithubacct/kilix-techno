@@ -1,5 +1,7 @@
 #include "kilix_techno/ui.h"
 
+#include "kilix_techno/soundbank.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -100,6 +102,18 @@ static uint32_t role_color(ktech_role role)
     case KTECH_ROLE_CHORD: return COLOR_PURPLE;
     case KTECH_ROLE_TEXTURE: return COLOR_GREEN;
     default: return COLOR_TEXT;
+    }
+}
+
+static void resolve_scene(const ktech_project *project, uint8_t scene,
+                          ktech_scene *resolved)
+{
+    for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
+        ktech_track scratch;
+        const ktech_track *source = ktech_project_resolve_track(
+            project, scene, track, &scratch);
+        resolved->tracks[track] = source ? *source :
+            project->scenes[scene].tracks[track];
     }
 }
 
@@ -278,16 +292,166 @@ static void draw_meter(sr_canvas *canvas, int x, int y, int width,
                  color, 1.0f);
 }
 
+static bool render_alternate_view(sr_canvas *canvas,
+                                  const ktech_editor *editor,
+                                  const ktech_audio_status *audio)
+{
+    ktech_editor_view view = ktech_editor_view_current(editor);
+    if (view == KTECH_VIEW_STEPS) return false;
+    const ktech_project *project = ktech_editor_project_const(editor);
+    sr_fill_rect(canvas, 0.0f, 0.0f, (float)canvas->w, 52.0f,
+                 COLOR_PANEL, 1.0f);
+    const char *title = view == KTECH_VIEW_PIANO_ROLL ? "PIANO ROLL" :
+                        view == KTECH_VIEW_ARRANGEMENT ? "ARRANGEMENT" :
+                                                        "MIXER";
+    sr_text_shadow(canvas, 14.0f, 10.0f, "KILIX TECHNO",
+                   COLOR_CYAN, 1.0f, 2);
+    draw_text(canvas, canvas->w >= 500 ? 230 : 140, 19, title,
+              COLOR_MAGENTA);
+    draw_text(canvas, canvas->w - 230, 19,
+              "1 GRID  2 PIANO  3 ARRANGE  4 MIXER", COLOR_DIM);
+    if (view == KTECH_VIEW_PIANO_ROLL) {
+        uint8_t scene = ktech_editor_scene(editor);
+        uint8_t track_index = ktech_editor_track(editor);
+        ktech_track scratch;
+        const ktech_track *track = ktech_project_resolve_track(
+            project, scene, track_index, &scratch);
+        if (!track) return true;
+        uint8_t selected = ktech_editor_step(editor);
+        uint8_t center = track->steps[selected].note;
+        uint8_t low = center > 5u ? (uint8_t)(center - 5u) : 0u;
+        if (low > 116u) low = 116u;
+        int columns = canvas->w >= 900 ? 16 : 8;
+        int page = selected / columns * columns;
+        int left = 72;
+        int top = 74;
+        int cell_width = (canvas->w - left - 18) / columns;
+        int cell_height = (canvas->h - top - 86) / 12;
+        if (cell_height < 18) cell_height = 18;
+        char info[160];
+        (void)snprintf(info, sizeof info, "SCENE %u  TRACK %u  %s",
+                       (unsigned)scene + 1u, (unsigned)track_index + 1u,
+                       ktech_role_name((ktech_role)track->role));
+        draw_text(canvas, 14, 56, info, COLOR_TEXT);
+        for (int row = 0; row < 12; ++row) {
+            uint8_t note = (uint8_t)((int)low + 11 - row);
+            char label[8];
+            static const char *const names[] = {
+                "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"
+            };
+            (void)snprintf(label, sizeof label, "%s%d", names[note % 12u],
+                           (int)note / 12 - 1);
+            draw_text(canvas, 14, top + row * cell_height + 3, label,
+                      note % 12u == 0u ? COLOR_TEXT : COLOR_DIM);
+            for (int column = 0; column < columns; ++column) {
+                int step = page + column;
+                int x = left + column * cell_width;
+                int y = top + row * cell_height;
+                bool black = note % 12u == 1u || note % 12u == 3u ||
+                             note % 12u == 6u || note % 12u == 8u ||
+                             note % 12u == 10u;
+                sr_fill_rect(canvas, (float)x + 1.0f, (float)y + 1.0f,
+                             (float)cell_width - 2.0f,
+                             (float)cell_height - 2.0f,
+                             black ? COLOR_GRID : COLOR_PANEL_RAISED,
+                             black ? 0.55f : 0.8f);
+                if (step < track->length && track->steps[step].enabled &&
+                    track->steps[step].note == note) {
+                    float height = (float)(cell_height - 4) *
+                                   track->steps[step].velocity / 127.0f;
+                    sr_fill_rect(canvas, (float)x + 3.0f,
+                                 (float)y + (float)cell_height - 2.0f - height,
+                                 (float)cell_width - 6.0f, height,
+                                 role_color((ktech_role)track->role), 0.9f);
+                }
+                if (step == selected && note == center)
+                    sr_stroke_rect(canvas, (float)x, (float)y,
+                                   (float)cell_width, (float)cell_height,
+                                   2.0f, COLOR_FOCUS, 1.0f);
+            }
+        }
+        const ktech_step *step = &track->steps[selected];
+        (void)snprintf(info, sizeof info,
+                       "STEP %u | NOTE %u | VEL %u | PROB %u%% | GATE %u%% | x%u",
+                       (unsigned)selected + 1u, step->note, step->velocity,
+                       step->probability, step->gate, step->ratchet);
+        draw_text(canvas, 14, canvas->h - 30, info, COLOR_TEXT);
+    } else if (view == KTECH_VIEW_ARRANGEMENT) {
+        char line[256];
+        (void)snprintf(line, sizeof line, "%u ENTRIES / %u BARS",
+                       (unsigned)project->arrangement_count,
+                       (unsigned)ktech_project_arrangement_bars(project));
+        draw_text(canvas, 18, 66, line, COLOR_TEXT);
+        int y = 92;
+        for (uint16_t index = 0u; index < project->arrangement_count &&
+             y < canvas->h - 24; ++index, y += 24) {
+            const ktech_arrangement_entry *entry =
+                &project->arrangement[index];
+            (void)snprintf(line, sizeof line,
+                           "%c%c%c  #%03u  SCENE %02u  %3u BARS",
+                           index == project->arrangement_selected ? 'S' : '-',
+                           index == project->arrangement_queued ? 'Q' : '-',
+                           index == project->arrangement_audible ? 'A' : '-',
+                           (unsigned)index + 1u,
+                           (unsigned)entry->scene + 1u,
+                           (unsigned)entry->bars);
+            sr_fill_rect(canvas, 14.0f, (float)y - 4.0f,
+                         (float)canvas->w - 28.0f, 21.0f,
+                         index % 2u ? COLOR_GRID : COLOR_PANEL,
+                         index % 2u ? 0.4f : 0.8f);
+            draw_text(canvas, 22, y, line,
+                      index == project->arrangement_audible ? COLOR_GREEN :
+                      index == project->arrangement_queued ? COLOR_YELLOW :
+                                                             COLOR_TEXT);
+        }
+    } else {
+        char line[256];
+        int y = 68;
+        for (uint8_t bus = 0u; bus < project->bus_count; ++bus, y += 70) {
+            const ktech_bus *value = &project->buses[bus];
+            (void)snprintf(line, sizeof line,
+                           "BUS %u  %s  LEVEL %u%%  PAN %u  %c%c  FX %u",
+                           (unsigned)bus + 1u, value->name,
+                           (unsigned)value->level, (unsigned)value->pan,
+                           value->mute ? 'M' : '-', value->solo ? 'S' : '-',
+                           (unsigned)value->effect_count);
+            draw_text(canvas, 18, y, line, COLOR_TEXT);
+            sr_fill_rect(canvas, 18.0f, (float)y + 22.0f, 260.0f, 8.0f,
+                         COLOR_GRID, 1.0f);
+            sr_fill_rect(canvas, 18.0f, (float)y + 22.0f,
+                         2.6f * value->level, 8.0f,
+                         bus == 0u ? COLOR_CYAN : COLOR_MAGENTA, 1.0f);
+            if (audio) {
+                draw_meter(canvas, 300, y + 22, 130,
+                           audio->bus_peak_left[bus], COLOR_CYAN);
+                draw_meter(canvas, 444, y + 22, 130,
+                           audio->bus_peak_right[bus], COLOR_MAGENTA);
+            }
+        }
+        (void)snprintf(line, sizeof line,
+                       "MACROS %u/%u | FILL %u%% | VARIATION %u%% | PENDING %s",
+                       (unsigned)project->macro_count, KTECH_MACRO_CAPACITY,
+                       (unsigned)project->performance_fill,
+                       (unsigned)project->performance_variation,
+                       audio && audio->pending ? "YES" : "NO");
+        draw_text(canvas, 18, canvas->h - 30, line, COLOR_DIM);
+    }
+    return true;
+}
+
 void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
                      const ktech_audio_status *audio, const char *message)
 {
     if (!canvas || !editor) return;
     const ktech_project *project = ktech_editor_project_const(editor);
     const uint8_t scene_index = ktech_editor_scene(editor);
-    const ktech_scene *scene = &project->scenes[scene_index];
+    ktech_scene resolved_scene;
+    resolve_scene(project, scene_index, &resolved_scene);
+    const ktech_scene *scene = &resolved_scene;
     ktech_ui_layout layout;
     ktech_ui_layout_make(&layout, canvas->w, canvas->h, editor);
     sr_clear(canvas, COLOR_BG);
+    if (render_alternate_view(canvas, editor, audio)) return;
 
     const char *state = !audio ? "EDIT" : audio->stopped ? "STOP" :
                         audio->paused ? "PAUSE" : "PLAY";
@@ -335,6 +499,16 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
                                       KTECH_SAMPLE_BANK_COUNT ?
                                       COLOR_GREEN : COLOR_YELLOW,
                                   false) + 6;
+    }
+    if (project->arrangement_count > 0u && canvas->w >= 920) {
+        (void)snprintf(chip, sizeof chip, "ARR %uB S%s Q%s A%s",
+                       ktech_project_arrangement_bars(project),
+                       project->arrangement_selected == UINT16_MAX ? "-" : "+",
+                       project->arrangement_queued == UINT16_MAX ? "-" : "+",
+                       project->arrangement_audible == UINT16_MAX ? "-" : "+");
+        if (header_x + text_width(chip) + 22 < canvas->w)
+            header_x += draw_chip(canvas, header_x, 12, chip,
+                                  COLOR_MAGENTA, false) + 6;
     }
     if (ktech_editor_dirty(editor)) {
         if (header_x + text_width("UNSAVED") + 22 < canvas->w)
@@ -452,6 +626,13 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
                                (float)cell_width + 2.0f,
                                (float)cell_height + 2.0f, 2.0f,
                                COLOR_YELLOW, 1.0f);
+            if (valid && ktech_editor_step_selected(
+                             editor, track, (uint8_t)step_index))
+                sr_stroke_rect(canvas, (float)cell_x,
+                               (float)cell_y,
+                               (float)cell_width,
+                               (float)cell_height, 1.0f,
+                               COLOR_MAGENTA, 1.0f);
             if (valid && track == selected_track &&
                 step_index == selected_step) {
                 sr_stroke_rect(canvas, (float)cell_x - 2.0f,
@@ -629,7 +810,7 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
         sr_fill_rect(canvas, 0.0f, 0.0f, (float)canvas->w,
                      (float)canvas->h, COLOR_BG, 0.82f);
         int box_width = canvas->w >= 760 ? 720 : canvas->w - 24;
-        int box_height = canvas->h >= 400 ? 360 : canvas->h - 20;
+        int box_height = canvas->h >= 520 ? 480 : canvas->h - 20;
         int x = (canvas->w - box_width) / 2;
         int y = (canvas->h - box_height) / 2;
         sr_fill_rect(canvas, (float)x, (float)y, (float)box_width,
@@ -644,7 +825,9 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
             "R-DRAG STEP", "+ / - / WHEEL", "SPACE", ". / CTRL+SPACE",
             "TAB/[ ]/L-TRK", "R-CLICK TRACK", "M / S", ", / >",
             "L-CLICK SCENE", "R-CLICK SCENE", "T", "CTRL+Z / Y",
-            "CTRL+S / E", "? / Q"
+            "CTRL+S / E", "1 / 2 / 3 / 4", "SHIFT+ARROWS",
+            "CTRL+C/X/V", "CTRL+P / D", "ALT+A / ENTER",
+            "ALT+F/C/I/M", "? / Q"
         };
         const char *descriptions[] = {
             "MOVE STEP / CHOOSE FIELD", "TOGGLE STEP", "TOGGLE / PAINT",
@@ -653,12 +836,17 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
             "TRACK OPTIONS",
             "MUTE / SOLO", "CHOOSE SCENE", "SELECT SCENE",
             "LAUNCH SCENE", "TAP TEMPO", "UNDO / REDO",
-            "SAVE / EXPORT", "HELP / GUARDED QUIT"
+            "SAVE / EXPORT", "GRID / PIANO / SONG / MIXER",
+            "EXTEND TILE RANGE", "COPY / CUT / PASTE RANGE",
+            "LINK PATTERN / COPY PATTERN", "APPEND / LAUNCH SONG",
+            "FILL / CLEAR / INVERT / MIRROR", "HELP / GUARDED QUIT"
         };
         size_t count = sizeof keys / sizeof keys[0];
         int columns = box_width >= 600 ? 2 : 1;
         int rows = ((int)count + columns - 1) / columns;
-        int row_height = columns == 2 ? 30 : 14;
+        int row_height = columns == 2 ? (box_height - 64) / rows : 14;
+        if (row_height > 30) row_height = 30;
+        if (row_height < 14) row_height = 14;
         int column_width = (box_width - 36) / columns;
         for (size_t index = 0u; index < count; ++index) {
             int column = (int)index / rows;
@@ -742,6 +930,12 @@ size_t ktech_ui_context_item_count(const ktech_ui_context_menu *menu)
         if (menu->group < KTECH_UI_INSTRUMENT_GROUP_COUNT)
             return (size_t)instrument_groups[menu->group].role_count + 1u;
         return 1u;
+    case KTECH_UI_CONTEXT_SEARCH: {
+        if (menu->query_length == 0u) return 1u;
+        size_t count = ktech_ui_search_roles(menu->query, NULL, 0u);
+        if (count > 10u) count = 10u;
+        return count + 1u;
+    }
     default: return 0u;
     }
 }
@@ -764,6 +958,56 @@ bool ktech_ui_instrument_group_role(uint8_t group, uint8_t item,
     return true;
 }
 
+static unsigned ascii_lower(unsigned value)
+{
+    return value >= (unsigned)'A' && value <= (unsigned)'Z' ?
+        value + ((unsigned)'a' - (unsigned)'A') : value;
+}
+
+static bool ascii_contains(const char *text, const char *query)
+{
+    if (!query || query[0] == '\0') return true;
+    for (size_t start = 0u; text[start] != '\0'; ++start) {
+        size_t offset = 0u;
+        while (query[offset] != '\0' && text[start + offset] != '\0' &&
+               ascii_lower((unsigned char)text[start + offset]) ==
+               ascii_lower((unsigned char)query[offset]))
+            ++offset;
+        if (query[offset] == '\0') return true;
+    }
+    return false;
+}
+
+size_t ktech_ui_search_roles(const char *query, ktech_role *roles,
+                             size_t capacity)
+{
+    if (!query) return 0u;
+    size_t count = 0u;
+    for (unsigned role = 0u; role < KTECH_ROLE_COUNT; ++role) {
+        if (!ascii_contains(ktech_role_name((ktech_role)role), query))
+            continue;
+        if (roles && count < capacity) roles[count] = (ktech_role)role;
+        ++count;
+    }
+    return count;
+}
+
+bool ktech_ui_context_role(const ktech_ui_context_menu *menu, uint8_t item,
+                           ktech_role *role)
+{
+    if (!menu) return false;
+    if (menu->page == KTECH_UI_CONTEXT_ROLES)
+        return ktech_ui_instrument_group_role(menu->group, item, role);
+    if (menu->page != KTECH_UI_CONTEXT_SEARCH || menu->query_length == 0u)
+        return false;
+    ktech_role matches[10];
+    size_t count = ktech_ui_search_roles(menu->query, matches, 10u);
+    if (count > 10u) count = 10u;
+    if ((size_t)item >= count) return false;
+    if (role) *role = matches[item];
+    return true;
+}
+
 static bool context_geometry_make(context_geometry *geometry,
                                   const sr_canvas *canvas,
                                   const ktech_ui_context_menu *menu)
@@ -781,7 +1025,8 @@ static bool context_geometry_make(context_geometry *geometry,
     if (geometry->row_height < 16) geometry->row_height = 16;
     geometry->height = geometry->header_height +
                        geometry->row_height * geometry->item_count + 6;
-    geometry->width = menu->page == KTECH_UI_CONTEXT_ROLES ? 312 : 292;
+    geometry->width = (menu->page == KTECH_UI_CONTEXT_ROLES ||
+                       menu->page == KTECH_UI_CONTEXT_SEARCH) ? 340 : 292;
     if (geometry->width > canvas->w - 16)
         geometry->width = canvas->w - 16;
     geometry->x = menu->anchor_x;
@@ -817,14 +1062,23 @@ static void context_item_label(char *output, size_t capacity,
                            ktech_ui_instrument_group_name(item));
         else
             (void)snprintf(output, capacity, "<  TRACK OPTIONS");
-    } else if (menu->page == KTECH_UI_CONTEXT_ROLES) {
+    } else if (menu->page == KTECH_UI_CONTEXT_ROLES ||
+               menu->page == KTECH_UI_CONTEXT_SEARCH) {
         ktech_role role;
-        if (ktech_ui_instrument_group_role(menu->group, item, &role))
-            (void)snprintf(output, capacity, "%s%s",
+        if (ktech_ui_context_role(menu, item, &role)) {
+            int bank = ktech_soundbank_role_bank_index(role);
+            bool installed = bank < 0 ||
+                (menu->installed_banks & (UINT32_C(1) << (unsigned)bank));
+            (void)snprintf(output, capacity, "%s%s  [%s]%s",
                            track->role == (uint8_t)role ? "*  " : "   ",
-                           ktech_role_name(role));
+                           ktech_role_name(role),
+                           installed ? "installed" : "download",
+                           ktech_editor_favorite(editor, role) ? "  +" : "");
+        }
         else
-            (void)snprintf(output, capacity, "<  INSTRUMENT BANKS");
+            (void)snprintf(output, capacity, "%s",
+                           menu->page == KTECH_UI_CONTEXT_SEARCH ?
+                           "<  CLEAR SEARCH" : "<  INSTRUMENT BANKS");
     } else {
         output[0] = '\0';
     }
@@ -853,6 +1107,9 @@ void ktech_ui_render_context_menu(sr_canvas *canvas,
                        (unsigned)menu->track + 1u);
     else if (menu->page == KTECH_UI_CONTEXT_GROUPS)
         (void)snprintf(title, sizeof title, "CHOOSE INSTRUMENT BANK");
+    else if (menu->page == KTECH_UI_CONTEXT_SEARCH)
+        (void)snprintf(title, sizeof title, "SEARCH: %s%s", menu->query,
+                       menu->query_length == 0u ? "TYPE TO FILTER" : "");
     else
         (void)snprintf(title, sizeof title, "%s",
                        ktech_ui_instrument_group_name(menu->group));
@@ -865,24 +1122,28 @@ void ktech_ui_render_context_menu(sr_canvas *canvas,
         context_item_label(label, sizeof label, editor, menu,
                            (uint8_t)index);
         bool current = false;
-        if (menu->page == KTECH_UI_CONTEXT_ROLES) {
+        if (menu->page == KTECH_UI_CONTEXT_ROLES ||
+            menu->page == KTECH_UI_CONTEXT_SEARCH) {
             ktech_role role;
-            if (ktech_ui_instrument_group_role(menu->group,
-                                                (uint8_t)index, &role)) {
+            if (ktech_ui_context_role(menu, (uint8_t)index, &role)) {
                 const ktech_project *project =
                     ktech_editor_project_const(editor);
                 current = project->scenes[ktech_editor_scene(editor)]
                               .tracks[menu->track].role == (uint8_t)role;
             }
         }
+        bool highlighted = (uint8_t)index == menu->selected;
         sr_fill_rect(canvas, (float)geometry.x + 6.0f, (float)row_y,
                      (float)geometry.width - 12.0f,
                      (float)geometry.row_height - 2.0f,
+                     highlighted ? COLOR_CYAN :
                      current ? COLOR_PANEL_RAISED : COLOR_GRID,
+                     highlighted ? 0.38f :
                      current ? 1.0f : index % 2 == 0 ? 0.42f : 0.24f);
         draw_text(canvas, geometry.x + 14,
                   row_y + (geometry.row_height - 14) / 2,
-                  label, current ? COLOR_CYAN : COLOR_TEXT);
+                  label, highlighted ? COLOR_TEXT :
+                  current ? COLOR_CYAN : COLOR_TEXT);
     }
 }
 

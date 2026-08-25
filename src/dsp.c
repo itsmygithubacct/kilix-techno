@@ -101,3 +101,161 @@ void ktech_dsp_process(ktech_dsp *dsp, int16_t *interleaved,
         if (dsp->delay_position >= delay_frames) dsp->delay_position = 0u;
     }
 }
+
+bool ktech_fx_rack_init(ktech_fx_rack *rack, uint32_t sample_rate)
+{
+    if (!rack || sample_rate < 8000u || sample_rate > 192000u) return false;
+    memset(rack, 0, sizeof *rack);
+    rack->delay_capacity = (size_t)sample_rate * 3u / 2u + 1u;
+    size_t samples = rack->delay_capacity * 2u *
+                     KTECH_EFFECT_CHAIN_CAPACITY;
+    if (rack->delay_capacity > SIZE_MAX / 2u /
+            KTECH_EFFECT_CHAIN_CAPACITY / sizeof *rack->delay)
+        return false;
+    rack->delay = calloc(samples, sizeof *rack->delay);
+    if (!rack->delay) return false;
+    rack->sample_rate = sample_rate;
+    atomic_init(&rack->effect_count, 0u);
+    for (unsigned effect = 0u; effect < KTECH_EFFECT_CHAIN_CAPACITY; ++effect)
+        for (unsigned word = 0u; word < 2u; ++word)
+            atomic_init(&rack->config[effect][word], 0u);
+    return true;
+}
+
+void ktech_fx_rack_free(ktech_fx_rack *rack)
+{
+    if (!rack) return;
+    free(rack->delay);
+    memset(rack, 0, sizeof *rack);
+}
+
+void ktech_fx_rack_configure(ktech_fx_rack *rack, const ktech_bus *bus)
+{
+    if (!rack || !rack->delay || !bus) return;
+    unsigned count = bus->effect_count;
+    if (count > KTECH_EFFECT_CHAIN_CAPACITY)
+        count = KTECH_EFFECT_CHAIN_CAPACITY;
+    for (unsigned index = 0u; index < count; ++index) {
+        const ktech_effect *effect = &bus->effects[index];
+        unsigned first = effect->kind | ((unsigned)effect->enabled << 8) |
+                         ((unsigned)effect->wet << 16) |
+                         ((unsigned)effect->parameter_count << 24);
+        unsigned second = effect->parameters[0] |
+                          ((unsigned)effect->parameters[1] << 8) |
+                          ((unsigned)effect->parameters[2] << 16) |
+                          ((unsigned)effect->parameters[3] << 24);
+        atomic_store_explicit(&rack->config[index][0], first,
+                              memory_order_release);
+        atomic_store_explicit(&rack->config[index][1], second,
+                              memory_order_release);
+    }
+    atomic_store_explicit(&rack->effect_count, count, memory_order_release);
+}
+
+static int32_t blend_wet(int32_t dry, int32_t processed, unsigned wet)
+{
+    return (int32_t)(((int64_t)dry * (100u - wet) +
+                      (int64_t)processed * wet) / 100);
+}
+
+static int32_t rack_delay(ktech_fx_rack *rack, unsigned slot,
+                          unsigned channel, int32_t input,
+                          unsigned time, unsigned feedback)
+{
+    size_t delay_frames = (size_t)rack->sample_rate * (20u + time * 8u) /
+                          1000u;
+    if (delay_frames == 0u) delay_frames = 1u;
+    if (delay_frames > rack->delay_capacity)
+        delay_frames = rack->delay_capacity;
+    if (rack->delay_position[slot] >= delay_frames)
+        rack->delay_position[slot] = 0u;
+    size_t base = (size_t)slot * rack->delay_capacity * 2u;
+    size_t at = base + rack->delay_position[slot] * 2u + channel;
+    int32_t delayed = rack->delay[at];
+    rack->delay[at] = clamp16(input +
+        (int32_t)((int64_t)delayed * feedback / 100));
+    return delayed;
+}
+
+void ktech_fx_rack_process(ktech_fx_rack *rack, int16_t *interleaved,
+                           size_t frames)
+{
+    if (!rack || !rack->delay || !interleaved || frames == 0u) return;
+    unsigned count = atomic_load_explicit(&rack->effect_count,
+                                          memory_order_acquire);
+    if (count > KTECH_EFFECT_CHAIN_CAPACITY)
+        count = KTECH_EFFECT_CHAIN_CAPACITY;
+    for (unsigned slot = 0u; slot < count; ++slot) {
+        unsigned first = atomic_load_explicit(&rack->config[slot][0],
+                                              memory_order_acquire);
+        unsigned parameters = atomic_load_explicit(&rack->config[slot][1],
+                                                   memory_order_acquire);
+        unsigned kind = first & 0xffu;
+        bool enabled = ((first >> 8) & 0xffu) != 0u;
+        unsigned wet = (first >> 16) & 0xffu;
+        unsigned p0 = parameters & 0xffu;
+        unsigned p1 = (parameters >> 8) & 0xffu;
+        if (!enabled || kind >= KTECH_EFFECT_KIND_COUNT || wet == 0u)
+            continue;
+        for (size_t frame = 0u; frame < frames; ++frame) {
+            for (unsigned channel = 0u; channel < 2u; ++channel) {
+                size_t at = frame * 2u + channel;
+                int32_t dry = interleaved[at];
+                int32_t value = dry;
+                if (kind == KTECH_EFFECT_FILTER) {
+                    int32_t alpha = 256 + (int32_t)p0 * 322;
+                    if (alpha > 32768) alpha = 32768;
+                    rack->filter_state[slot][channel] +=
+                        (int32_t)(((int64_t)value -
+                                   rack->filter_state[slot][channel]) * alpha /
+                                  32768);
+                    value = rack->filter_state[slot][channel];
+                } else if (kind == KTECH_EFFECT_SATURATOR) {
+                    value = saturate(value, (uint8_t)(p0 > 100u ? 100u : p0));
+                } else if (kind == KTECH_EFFECT_TAPE_DELAY ||
+                           kind == KTECH_EFFECT_ROOM) {
+                    unsigned time = kind == KTECH_EFFECT_ROOM ?
+                        2u + p0 / 8u : p0;
+                    unsigned feedback = kind == KTECH_EFFECT_ROOM ?
+                        28u + p1 / 5u : p1;
+                    if (feedback > 92u) feedback = 92u;
+                    int32_t delayed = rack_delay(rack, slot, channel, value,
+                                                 time, feedback);
+                    value = kind == KTECH_EFFECT_ROOM ?
+                        value / 2 + delayed : value + delayed;
+                } else if (kind == KTECH_EFFECT_COMPRESSOR) {
+                    int32_t magnitude = value < 0 ? -value : value;
+                    int32_t *envelope =
+                        &rack->compressor_envelope[slot][channel];
+                    *envelope += (magnitude - *envelope) /
+                                 (magnitude > *envelope ? 8 : 128);
+                    int32_t threshold = 2048 + (int32_t)p0 * 286;
+                    unsigned ratio = 2u + p1 / 20u;
+                    if (*envelope > threshold && *envelope > 0)
+                        value = (int32_t)((int64_t)value *
+                            (threshold + (*envelope - threshold) /
+                             (int32_t)ratio) / *envelope);
+                } else if (kind == KTECH_EFFECT_BITCRUSH) {
+                    unsigned bits = 4u + p0 * 12u / 100u;
+                    unsigned shift = 16u - bits;
+                    int32_t quantum = (int32_t)(1u << shift);
+                    unsigned hold = 1u + p1 * 7u / 100u;
+                    if (rack->crush_counter[slot] == 0u)
+                        rack->crush_hold[slot][channel] =
+                            (value / quantum) * quantum;
+                    value = rack->crush_hold[slot][channel];
+                    if (channel == 1u)
+                        rack->crush_counter[slot] = (uint8_t)(
+                            (rack->crush_counter[slot] + 1u) % hold);
+                }
+                interleaved[at] = clamp16(blend_wet(dry, value, wet));
+            }
+            if (kind == KTECH_EFFECT_TAPE_DELAY ||
+                kind == KTECH_EFFECT_ROOM) {
+                ++rack->delay_position[slot];
+                if (rack->delay_position[slot] >= rack->delay_capacity)
+                    rack->delay_position[slot] = 0u;
+            }
+        }
+    }
+}
