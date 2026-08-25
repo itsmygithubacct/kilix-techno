@@ -26,10 +26,13 @@ CFLAGS ?= -O2 -g
 override CFLAGS += -std=c11 -pthread $(WARNINGS)
 DEPFLAGS := -MMD -MP
 LDLIBS := -lm -lz -pthread
+ASSET_PKGS := sndfile fluidsynth
+ASSET_LDLIBS := $(shell pkg-config --libs $(ASSET_PKGS) 2>/dev/null)
 
 DEPENDENCY_LIBS := \
 	$(CHIPSEQ_DIR)/$(BUILD_DIR)/libchip-sequencer.a \
 	$(PCMMIX_DIR)/$(BUILD_DIR)/libpcm-mixer.a \
+	$(PCMMIX_DIR)/$(BUILD_DIR)/libpcm-mixer-assets.a \
 	$(SESSION_DIR)/$(BUILD_DIR)/libkitty-terminal-session.a \
 	$(RASTER_DIR)/$(BUILD_DIR)/libsoft-raster.a \
 	$(STATE_DIR)/$(BUILD_DIR)/libkilix-state.a
@@ -53,7 +56,9 @@ all: $(APP_BIN)
 
 dependencies:
 	$(MAKE) -C $(CHIPSEQ_DIR) all
-	$(MAKE) -C $(PCMMIX_DIR) all
+	@pkg-config --exists $(ASSET_PKGS) || { \
+		echo "kilix-techno requires: $(ASSET_PKGS)" >&2; exit 1; }
+	$(MAKE) -C $(PCMMIX_DIR) all assets
 	$(MAKE) -C $(SESSION_DIR) all
 	$(MAKE) -C $(RASTER_DIR) all
 	$(MAKE) -C $(STATE_DIR) all
@@ -69,23 +74,23 @@ $(BUILD_DIR)/lib$(PROJECT).a: $(CORE_OBJECTS)
 
 $(APP_BIN): $(APP_OBJECTS) $(BUILD_DIR)/lib$(PROJECT).a dependencies
 	$(CC) $(CFLAGS) $(APP_OBJECTS) $(BUILD_DIR)/lib$(PROJECT).a \
-		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) -o $@
+		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
 
 $(TEST_BIN): tests/test_core.c $(BUILD_DIR)/lib$(PROJECT).a dependencies
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/lib$(PROJECT).a \
-		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) -o $@
+		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
 
 $(THREAD_TEST_BIN): tests/test_thread.c $(BUILD_DIR)/lib$(PROJECT).a dependencies
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/lib$(PROJECT).a \
-		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) -o $@
+		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
 
 $(FUZZ_BIN): tests/fuzz_project.c $(BUILD_DIR)/lib$(PROJECT).a dependencies
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/lib$(PROJECT).a \
-		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) -o $@
+		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
 
 $(BENCHMARK_BIN): benchmarks/benchmark.c $(BUILD_DIR)/lib$(PROJECT).a dependencies
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(BUILD_DIR)/lib$(PROJECT).a \
-		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) -o $@
+		$(DEPENDENCY_LIBS) $(LDFLAGS) $(LDLIBS) $(ASSET_LDLIBS) -o $@
 
 test: $(TEST_BIN) $(THREAD_TEST_BIN) $(APP_BIN)
 	$(TEST_BIN)

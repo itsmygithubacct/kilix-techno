@@ -59,6 +59,19 @@ static void test_project_codec(void)
 
     ktech_project_init(&original, UINT32_C(0x12345678));
     CHECK(ktech_project_validate(&original, NULL, 0u));
+    static const uint8_t curated_defaults[KTECH_TRACK_COUNT] = {
+        KTECH_ROLE_ONGENET_KICK,
+        KTECH_ROLE_ONGENET_SNARE,
+        KTECH_ROLE_ONGENET_CLAP,
+        KTECH_ROLE_ONGENET_CLOSED_HAT,
+        KTECH_ROLE_ONGENET_OPEN_HAT,
+        KTECH_ROLE_ONGENET_RIDE,
+        KTECH_ROLE_SF2_JNS_SYNTH_BASS,
+        KTECH_ROLE_VCSL_STRUMSTICK
+    };
+    for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track)
+        CHECK(original.scenes[0].tracks[track].role ==
+              curated_defaults[track]);
     CHECK(ktech_project_encode(&original, bytes, sizeof bytes, &size) ==
           KTECH_PROJECT_OK);
     CHECK(size > 50000u && size < sizeof bytes);
@@ -433,6 +446,8 @@ static void test_optional_soundbank(void)
 
     ktech_project project;
     ktech_project_init(&project, 14u);
+    CHECK(ktech_project_set_track_role(&project, 0u, 0u,
+                                       KTECH_ROLE_TIDAL_KICK));
     ktech_compiled *compiled = ktech_compile_scene_with_bank(
         &project, 0u, bank, warning, sizeof warning);
     CHECK(compiled != NULL);
@@ -910,7 +925,7 @@ static void test_ui_models(void)
           strstr(cells, "[.]") != NULL);
     CHECK(strstr(cells, "EDIT ") != NULL);
     CHECK(strstr(cells, "CHANCE") != NULL);
-    CHECK(strstr(cells, "BANKS 0/6 AVAILABLE") != NULL);
+    CHECK(strstr(cells, "BANKS 0/13 AVAILABLE") != NULL);
     CHECK(strstr(cells, "STATUS ready") != NULL);
     char tiny[8];
     CHECK(ktech_cell_render(tiny, sizeof tiny, 40, editor, &status, NULL) >

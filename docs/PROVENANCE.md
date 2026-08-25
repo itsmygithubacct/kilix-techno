@@ -18,8 +18,10 @@ techniques implemented by `chip-sequencer`; it includes no recordings or
 transcribed melodies. Optional recordings are downloaded only by explicit
 launcher action from the pinned, redistribution-permitting sources listed in
 `SOUNDBANKS.md`. They remain outside the application repository and retain
-their own license receipts. Test arrangements are intentionally short and
-original.
+their own license receipts. Ongenet is used only as a pinned distributor of
+declared-CC0 media bytes and license metadata; no Ongenet application source,
+interface, presets, or project data is copied. Test arrangements are
+intentionally short and original.
 
 `make clean-room-check` scans application-owned tracked paths for excluded web
 and media source types, rejects unexpected submodule pins or license digests,

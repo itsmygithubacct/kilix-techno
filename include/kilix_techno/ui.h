@@ -29,7 +29,7 @@ typedef struct ktech_ui_layout {
     int scene_height;
 } ktech_ui_layout;
 
-#define KTECH_UI_INSTRUMENT_GROUP_COUNT 7u
+#define KTECH_UI_INSTRUMENT_GROUP_COUNT 14u
 
 typedef enum ktech_ui_context_page {
     KTECH_UI_CONTEXT_CLOSED = 0,

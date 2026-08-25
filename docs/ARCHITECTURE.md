@@ -8,10 +8,12 @@ replaced only through the sequencer's row/beat boundary API, and its generation
 acknowledgement is the reclamation fence for the older snapshot.
 
 The control thread loads complete optional soundbank receipts before compiling
-the first scene. Strict canonical mono WAV decoding, integer linear resampling,
+the first scene. `pcm-mixer`'s optional asset layer uses libsndfile for WAV and
+OGG, resolves a bounded matching WAV/OGG region from SFZ, and uses FluidSynth
+to render a bounded SF2 preset. Decode, downmix, rate conversion, SF2 rendering,
 and uniform peak normalization happen there, never in the audio callback. The
-resulting immutable
-PCM allocations outlive every active and pending snapshot. A sample role with
+dependency-free realtime mixer only receives the resulting immutable PCM.
+Those allocations outlive every active and pending snapshot. A sample role with
 no valid installed PCM is compiled as its native synth-family fallback. The
 offline exporter builds its own rate-matched bank, so live playback and WAV
 export resolve instruments through the same path.

@@ -1,22 +1,22 @@
 #include "kilix_techno/soundbank.h"
 
-#include "pcm_mixer.h"
+#include "pcmmix_asset.h"
 
-#include <errno.h>
-#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <unistd.h>
-
-enum { CANONICAL_SAMPLE_RATE = 44100 };
 
 typedef struct sample_spec {
     const char *bank;
     const char *file;
+    uint16_t hold_ms;
+    uint16_t release_ms;
     uint8_t root_note;
+    uint8_t select_note;
+    uint8_t velocity;
+    uint8_t program;
     uint8_t bank_index;
 } sample_spec;
 
@@ -24,45 +24,92 @@ struct ktech_soundbank {
     int16_t *owned[KTECH_ROLE_COUNT];
     chipseq_pcm pcm[KTECH_ROLE_COUNT];
     uint32_t sample_rate;
-    uint8_t installed_mask;
+    uint32_t installed_mask;
 };
 
+#define ASSET(bank_value, file_value, root_value, select_value, velocity_value, \
+              program_value, hold_value, release_value, index_value)          \
+    {(bank_value), (file_value), (hold_value), (release_value), (root_value), \
+     (select_value), (velocity_value), (program_value), (index_value)}
+#define PCM(bank_value, file_value, root_value, index_value)                  \
+    ASSET((bank_value), (file_value), (root_value), (root_value), 100u, 0u,  \
+          1200u, 500u, (index_value))
+
 static const sample_spec sample_specs[] = {
-    {"tr808-fischer", "kick.wav", 36u, 0u},
-    {"tr808-fischer", "snare.wav", 38u, 0u},
-    {"tr808-fischer", "clap.wav", 39u, 0u},
-    {"tr808-fischer", "closed-hat.wav", 42u, 0u},
-    {"tr808-fischer", "open-hat.wav", 46u, 0u},
-    {"tr808-fischer", "cowbell.wav", 48u, 0u},
-    {"stargate", "kick.wav", 36u, 1u},
-    {"stargate", "snare.wav", 38u, 1u},
-    {"stargate", "closed-hat.wav", 42u, 1u},
-    {"stargate", "open-hat.wav", 46u, 1u},
-    {"stargate", "fm-perc.wav", 48u, 1u},
-    {"stargate", "sub-a.wav", 33u, 1u},
-    {"scoredata-forge", "growl.wav", 36u, 2u},
-    {"scoredata-forge", "house-stab.wav", 48u, 2u},
-    {"mechsounds", "pluck-bass.wav", 60u, 3u},
-    {"mechsounds", "fuzz-bass.wav", 60u, 3u},
-    {"mechsounds", "wobble.wav", 60u, 3u},
-    {"mechsounds", "time-pad.wav", 60u, 3u},
-    {"mechsounds", "industrial-hit.wav", 48u, 3u},
-    {"mechsounds", "glitch-vox.wav", 60u, 3u},
-    {"karoryfer", "a2.wav", 45u, 4u},
-    {"karoryfer", "c4.wav", 60u, 4u},
-    {"karoryfer", "f3.wav", 53u, 4u},
-    {"karoryfer", "g2.wav", 43u, 4u},
-    {"vcsl", "clavisynth-c3.wav", 60u, 5u},
-    {"vcsl", "fm-piano-c3.wav", 60u, 5u},
-    {"vcsl", "brake-drum.wav", 48u, 5u},
-    {"vcsl", "ocean-drum.wav", 60u, 5u}
+    PCM("tr808-fischer", "kick.wav", 36u, 0u),
+    PCM("tr808-fischer", "snare.wav", 38u, 0u),
+    PCM("tr808-fischer", "clap.wav", 39u, 0u),
+    PCM("tr808-fischer", "closed-hat.wav", 42u, 0u),
+    PCM("tr808-fischer", "open-hat.wav", 46u, 0u),
+    PCM("tr808-fischer", "cowbell.wav", 48u, 0u),
+    PCM("stargate", "kick.wav", 36u, 1u),
+    PCM("stargate", "snare.wav", 38u, 1u),
+    PCM("stargate", "closed-hat.wav", 42u, 1u),
+    PCM("stargate", "open-hat.wav", 46u, 1u),
+    PCM("stargate", "fm-perc.wav", 48u, 1u),
+    PCM("stargate", "sub-a.wav", 33u, 1u),
+    PCM("scoredata-forge", "growl.wav", 36u, 2u),
+    PCM("scoredata-forge", "house-stab.wav", 48u, 2u),
+    PCM("mechsounds", "pluck-bass.wav", 60u, 3u),
+    PCM("mechsounds", "fuzz-bass.wav", 60u, 3u),
+    PCM("mechsounds", "wobble.wav", 60u, 3u),
+    PCM("mechsounds", "time-pad.wav", 60u, 3u),
+    PCM("mechsounds", "industrial-hit.wav", 48u, 3u),
+    PCM("mechsounds", "glitch-vox.wav", 60u, 3u),
+    PCM("karoryfer", "a2.wav", 45u, 4u),
+    PCM("karoryfer", "c4.wav", 60u, 4u),
+    PCM("karoryfer", "f3.wav", 53u, 4u),
+    PCM("karoryfer", "g2.wav", 43u, 4u),
+    PCM("vcsl", "clavisynth-c3.wav", 60u, 5u),
+    PCM("vcsl", "fm-piano-c3.wav", 60u, 5u),
+    PCM("vcsl", "brake-drum.wav", 48u, 5u),
+    PCM("vcsl", "ocean-drum.wav", 60u, 5u),
+
+    PCM("ongenet-kit", "kick.wav", 36u, 6u),
+    PCM("ongenet-kit", "snare.wav", 38u, 6u),
+    PCM("ongenet-kit", "clap.wav", 39u, 6u),
+    PCM("ongenet-kit", "closed-hat.wav", 42u, 6u),
+    PCM("ongenet-kit", "open-hat.wav", 46u, 6u),
+    PCM("ongenet-kit", "ride.wav", 51u, 6u),
+
+    ASSET("vcsl-acoustic", "kick.sfz", 36u, 60u, 90u, 0u,
+          1200u, 500u, 7u),
+    ASSET("vcsl-acoustic", "snare.sfz", 38u, 60u, 90u, 0u,
+          1200u, 500u, 7u),
+    ASSET("vcsl-acoustic", "strumstick.sfz", 59u, 60u, 90u, 0u,
+          1200u, 500u, 7u),
+    ASSET("vcsl-acoustic", "piano.sfz", 60u, 60u, 80u, 0u,
+          1200u, 500u, 7u),
+
+    ASSET("vsco2ce", "violin-pizz.sfz", 59u, 60u, 80u, 0u,
+          1200u, 500u, 8u),
+    ASSET("vsco2ce", "cello-pizz.sfz", 60u, 60u, 80u, 0u,
+          1200u, 500u, 8u),
+    ASSET("vsco2ce", "clarinet-stac.sfz", 62u, 60u, 80u, 0u,
+          1200u, 500u, 8u),
+    ASSET("vsco2ce", "horn-stac.sfz", 60u, 60u, 80u, 0u,
+          1200u, 500u, 8u),
+
+    ASSET("sf2-chaosbank", "ChaosBank.sf2", 60u, 60u, 100u, 0u,
+          900u, 300u, 9u),
+    ASSET("sf2-jnsgm2", "Jnsgm2.sf2", 36u, 36u, 100u, 38u,
+          900u, 300u, 10u),
+    ASSET("sf2-masterpiece", "Masterpiece.sf2", 60u, 60u, 100u, 89u,
+          1200u, 500u, 11u),
+    ASSET("sf2-unison", "Unison.SF2", 60u, 60u, 100u, 81u,
+          1000u, 400u, 12u)
 };
+
+#undef PCM
+#undef ASSET
 
 _Static_assert(KTECH_ROLE_TIDAL_KICK == KTECH_NATIVE_ROLE_COUNT,
                "sample roles must follow native roles");
 _Static_assert(sizeof sample_specs / sizeof sample_specs[0] ==
                    KTECH_ROLE_COUNT - KTECH_NATIVE_ROLE_COUNT,
                "every sample role needs one soundbank specification");
+_Static_assert(KTECH_SAMPLE_BANK_COUNT <= 32u,
+               "installed bank mask capacity exceeded");
 
 static void set_warning(char *warning, size_t size, const char *format, ...)
 {
@@ -101,61 +148,6 @@ static bool data_root(char *output, size_t capacity)
     return count >= 0 && (size_t)count < capacity;
 }
 
-static int16_t interpolate(int16_t left, int16_t right, uint32_t numerator,
-                           uint32_t denominator)
-{
-    int64_t first = (int64_t)left * (denominator - numerator);
-    int64_t second = (int64_t)right * numerator;
-    int64_t value = first + second;
-    value += value >= 0 ? (int64_t)denominator / 2 :
-                          -(int64_t)denominator / 2;
-    value /= denominator;
-    if (value > INT16_MAX) value = INT16_MAX;
-    if (value < INT16_MIN) value = INT16_MIN;
-    return (int16_t)value;
-}
-
-static int16_t *resample(int16_t *input, size_t input_count,
-                         uint32_t output_rate, size_t *output_count)
-{
-    if (output_rate == CANONICAL_SAMPLE_RATE) {
-        *output_count = input_count;
-        return input;
-    }
-    if (input_count > (SIZE_MAX - output_rate / 2u) /
-                      output_rate) {
-        free(input);
-        return NULL;
-    }
-    size_t count = (input_count * output_rate +
-                    CANONICAL_SAMPLE_RATE / 2u) /
-                   CANONICAL_SAMPLE_RATE;
-    if (count == 0u || count > UINT32_MAX ||
-        count > SIZE_MAX / sizeof(int16_t)) {
-        free(input);
-        return NULL;
-    }
-    int16_t *output = malloc(count * sizeof *output);
-    if (!output) {
-        free(input);
-        return NULL;
-    }
-    for (size_t index = 0u; index < count; ++index) {
-        uint64_t position = (uint64_t)index * CANONICAL_SAMPLE_RATE;
-        size_t source = (size_t)(position / output_rate);
-        uint32_t fraction = (uint32_t)(position % output_rate);
-        if (source >= input_count - 1u) {
-            output[index] = input[input_count - 1u];
-        } else {
-            output[index] = interpolate(input[source], input[source + 1u],
-                                        fraction, output_rate);
-        }
-    }
-    free(input);
-    *output_count = count;
-    return output;
-}
-
 static void normalize_peak(int16_t *frames, size_t count)
 {
     int32_t peak = 0;
@@ -181,11 +173,11 @@ static void clear_bank_index(ktech_soundbank *bank, uint8_t bank_index)
          index < sizeof sample_specs / sizeof sample_specs[0]; ++index) {
         if (sample_specs[index].bank_index != bank_index) continue;
         size_t role = KTECH_NATIVE_ROLE_COUNT + index;
-        free(bank->owned[role]);
+        pcmmix_asset_free(bank->owned[role]);
         bank->owned[role] = NULL;
         bank->pcm[role] = (chipseq_pcm){0};
     }
-    bank->installed_mask &= (uint8_t)~(1u << bank_index);
+    bank->installed_mask &= ~(UINT32_C(1) << bank_index);
 }
 
 static bool load_bank_index(ktech_soundbank *bank, uint8_t bank_index,
@@ -222,20 +214,29 @@ static bool load_bank_index(ktech_soundbank *bank, uint8_t bank_index,
             return false;
         }
         size_t frame_count = 0u;
-        char wav_error[160];
-        int16_t *frames = pcmmix_wav_load(path, &frame_count, wav_error,
-                                           sizeof wav_error);
+        char asset_error[160];
+        uint8_t asset_root = 0u;
+        pcmmix_asset_options options;
+        pcmmix_asset_options_init(&options);
+        options.target_rate = bank->sample_rate;
+        options.note = spec->select_note;
+        options.velocity = spec->velocity;
+        options.sf2_program = spec->program;
+        options.sf2_hold_ms = spec->hold_ms;
+        options.sf2_release_ms = spec->release_ms;
+        int16_t *frames = pcmmix_asset_load(
+            path, &options, &frame_count, &asset_root, asset_error,
+            sizeof asset_error);
         if (!frames) {
             set_warning(warning, warning_size, "%s: %.100s", first->bank,
-                        wav_error);
+                        asset_error);
             clear_bank_index(bank, bank_index);
             return false;
         }
-        frames = resample(frames, frame_count, bank->sample_rate,
-                          &frame_count);
-        if (!frames || frame_count > UINT32_MAX) {
+        if (frame_count > UINT32_MAX) {
+            pcmmix_asset_free(frames);
             set_warning(warning, warning_size,
-                        "%s cannot be resampled; using native fallbacks",
+                        "%s is too long; using native fallbacks",
                         first->bank);
             clear_bank_index(bank, bank_index);
             return false;
@@ -247,7 +248,7 @@ static bool load_bank_index(ktech_soundbank *bank, uint8_t bank_index,
             frames, (uint32_t)frame_count, 0u, 0u, spec->root_note
         };
     }
-    bank->installed_mask |= (uint8_t)(1u << bank_index);
+    bank->installed_mask |= UINT32_C(1) << bank_index;
     return true;
 }
 
@@ -271,7 +272,7 @@ void ktech_soundbank_free(ktech_soundbank *bank)
     if (!bank) return;
     for (size_t role = KTECH_NATIVE_ROLE_COUNT; role < KTECH_ROLE_COUNT;
          ++role)
-        free(bank->owned[role]);
+        pcmmix_asset_free(bank->owned[role]);
     memset(bank, 0, sizeof *bank);
     free(bank);
 }
@@ -296,6 +297,6 @@ uint8_t ktech_soundbank_installed_count(const ktech_soundbank *bank)
     if (!bank) return 0u;
     uint8_t count = 0u;
     for (uint8_t index = 0u; index < KTECH_SAMPLE_BANK_COUNT; ++index)
-        if ((bank->installed_mask & (uint8_t)(1u << index)) != 0u) ++count;
+        if ((bank->installed_mask & (UINT32_C(1) << index)) != 0u) ++count;
     return count;
 }

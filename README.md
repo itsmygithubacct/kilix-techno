@@ -10,9 +10,10 @@ cell interface.
 
 The application is native code. It has no browser, JavaScript runtime, local
 web server, plug-in host, account, telemetry, or runtime network dependency.
-Its nine original synth voices always work offline. Six separately optional,
-license-audited soundbanks can be installed through the Kilix launcher; the
-application only reads their normalized local WAV files.
+Its nine original synth voices always work offline. Thirteen separately
+optional, license-audited soundbanks can be installed through the Kilix
+launcher. A reusable Kilix audio layer loads bounded local WAV, OGG, SFZ, and
+SF2 assets on the control thread and hands immutable PCM to the realtime path.
 
 ## Build
 
@@ -24,6 +25,9 @@ cd kilix-techno
 make all
 make test
 ```
+
+The build uses the system `libsndfile` and `FluidSynth` development packages
+for the optional-format asset layer. Plebian-OS already provisions them.
 
 The runtime binary is `build/kilix-techno`. Use `--help` for command-line
 options. `make sanitize`, `make tsanitize`, `make fuzz`, `make benchmark`, and
@@ -88,7 +92,7 @@ temporary objects before caller state changes.
 
 ## Optional soundbanks
 
-The Kilix Software Center and `kilix install` list the same six entries with
+The Kilix Software Center and `kilix install` list the same thirteen entries with
 download and installed sizes. For example:
 
 ```sh
@@ -98,13 +102,23 @@ kilix install techno-scoredata-forge
 kilix install techno-mechsounds
 kilix install techno-karoryfer
 kilix install techno-vcsl
+kilix install techno-ongenet-kit
+kilix install techno-vcsl-acoustic
+kilix install techno-vsco2ce
+kilix install techno-sf2-chaosbank
+kilix install techno-sf2-jnsgm2
+kilix install techno-sf2-masterpiece
+kilix install techno-sf2-unison
 ```
 
-Every install is explicit, checksum-pinned, staged, normalized to mono
-16-bit/44.1 kHz PCM, and atomically published below
+Every install is explicit, checksum-pinned, staged, and atomically published below
 `$XDG_DATA_HOME/kilix-techno/soundbanks` (or the corresponding
 `~/.local/share` path). Each pack carries its own receipt, source record,
-checksums, and license notice. Details are in
+checksums, and license notice. WAV-only legacy packs are normalized at install;
+new packs preserve their WAV, SFZ, and SF2 source format and are decoded to
+rate-matched mono PCM at application startup. New projects select the compact
+Ongenet kit, VCSL Strumstick, and JNS synth bass, with native fallback until
+those lazy packs are installed. Details are in
 [docs/SOUNDBANKS.md](docs/SOUNDBANKS.md).
 
 ## Version-one boundaries

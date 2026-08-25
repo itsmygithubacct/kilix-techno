@@ -42,7 +42,11 @@ static const uint8_t role_default_notes[KTECH_ROLE_COUNT] = {
     36u, 48u,
     60u, 60u, 60u, 60u, 48u, 60u,
     45u, 60u, 53u, 43u,
-    60u, 60u, 48u, 60u
+    60u, 60u, 48u, 60u,
+    36u, 38u, 39u, 42u, 46u, 51u,
+    36u, 38u, 60u, 60u,
+    60u, 60u, 60u, 60u,
+    60u, 36u, 60u, 60u
 };
 
 #define KEY_BIND(action_value, key_value, modifier_value) \
@@ -203,7 +207,15 @@ const char *ktech_role_name(ktech_role role)
         "Mech Time Pad", "Mech Industrial Hit", "Mech Glitch Vox",
         "Karoryfer A2", "Karoryfer C4", "Karoryfer F3", "Karoryfer G2",
         "VCSL Clavisynth", "VCSL FM Piano", "VCSL Brake Drum",
-        "VCSL Ocean Drum"
+        "VCSL Ocean Drum",
+        "Ongenet Kick", "Ongenet Snare", "Ongenet Clap",
+        "Ongenet Closed Hat", "Ongenet Open Hat", "Ongenet Ride",
+        "VCSL Acoustic Kick", "VCSL Acoustic Snare", "VCSL Strumstick",
+        "VCSL Kawai Piano",
+        "VSCO Violin Pizz", "VSCO Cello Pizz", "VSCO Clarinet Stac",
+        "VSCO Horn Stac",
+        "ChaosBank Piano", "JNS Synth Bass", "Masterpiece Pad",
+        "Unison Lead"
     };
 
     return role < KTECH_ROLE_COUNT ? names[role] : "Unknown";
@@ -215,22 +227,30 @@ ktech_role ktech_role_fallback(ktech_role role)
     switch (role) {
     case KTECH_ROLE_TIDAL_KICK:
     case KTECH_ROLE_STARGATE_KICK:
+    case KTECH_ROLE_ONGENET_KICK:
+    case KTECH_ROLE_VCSL_ACOUSTIC_KICK:
         return KTECH_ROLE_KICK;
     case KTECH_ROLE_TIDAL_SNARE:
     case KTECH_ROLE_STARGATE_SNARE:
+    case KTECH_ROLE_ONGENET_SNARE:
+    case KTECH_ROLE_VCSL_ACOUSTIC_SNARE:
         return KTECH_ROLE_SNARE;
     case KTECH_ROLE_TIDAL_CLAP:
+    case KTECH_ROLE_ONGENET_CLAP:
         return KTECH_ROLE_CLAP;
     case KTECH_ROLE_TIDAL_CLOSED_HAT:
     case KTECH_ROLE_STARGATE_CLOSED_HAT:
+    case KTECH_ROLE_ONGENET_CLOSED_HAT:
         return KTECH_ROLE_CLOSED_HAT;
     case KTECH_ROLE_TIDAL_OPEN_HAT:
     case KTECH_ROLE_STARGATE_OPEN_HAT:
+    case KTECH_ROLE_ONGENET_OPEN_HAT:
         return KTECH_ROLE_OPEN_HAT;
     case KTECH_ROLE_TIDAL_COWBELL:
     case KTECH_ROLE_STARGATE_FM_PERC:
     case KTECH_ROLE_MECH_INDUSTRIAL_HIT:
     case KTECH_ROLE_VCSL_BRAKE_DRUM:
+    case KTECH_ROLE_ONGENET_RIDE:
         return KTECH_ROLE_PERCUSSION;
     case KTECH_ROLE_STARGATE_SUB:
     case KTECH_ROLE_FORGE_GROWL:
@@ -240,15 +260,25 @@ ktech_role ktech_role_fallback(ktech_role role)
     case KTECH_ROLE_KARORYFER_A2:
     case KTECH_ROLE_KARORYFER_F3:
     case KTECH_ROLE_KARORYFER_G2:
+    case KTECH_ROLE_SF2_JNS_SYNTH_BASS:
         return KTECH_ROLE_BASS;
     case KTECH_ROLE_FORGE_HOUSE_STAB:
     case KTECH_ROLE_KARORYFER_C4:
     case KTECH_ROLE_VCSL_CLAVISYNTH:
     case KTECH_ROLE_VCSL_FM_PIANO:
+    case KTECH_ROLE_VCSL_STRUMSTICK:
+    case KTECH_ROLE_VCSL_KAWAI_PIANO:
+    case KTECH_ROLE_VSCO_CLARINET_STAC:
+    case KTECH_ROLE_VSCO_HORN_STAC:
+    case KTECH_ROLE_SF2_CHAOS_PIANO:
         return KTECH_ROLE_CHORD;
     case KTECH_ROLE_MECH_TIME_PAD:
     case KTECH_ROLE_MECH_GLITCH_VOX:
     case KTECH_ROLE_VCSL_OCEAN_DRUM:
+    case KTECH_ROLE_VSCO_VIOLIN_PIZZ:
+    case KTECH_ROLE_VSCO_CELLO_PIZZ:
+    case KTECH_ROLE_SF2_MASTERPIECE_PAD:
+    case KTECH_ROLE_SF2_UNISON_LEAD:
         return KTECH_ROLE_TEXTURE;
     default:
         return KTECH_ROLE_TEXTURE;
@@ -282,14 +312,14 @@ void ktech_project_init(ktech_project *project, uint32_t seed)
         for (uint8_t track = 0u; track < KTECH_TRACK_COUNT; ++track) {
             ktech_track *current = &project->scenes[scene].tracks[track];
             static const uint8_t instruments[KTECH_TRACK_COUNT] = {
-                KTECH_ROLE_TIDAL_KICK,
-                KTECH_ROLE_STARGATE_SNARE,
-                KTECH_ROLE_TIDAL_CLAP,
-                KTECH_ROLE_TIDAL_CLOSED_HAT,
-                KTECH_ROLE_STARGATE_OPEN_HAT,
-                KTECH_ROLE_VCSL_BRAKE_DRUM,
-                KTECH_ROLE_MECH_FUZZ_BASS,
-                KTECH_ROLE_FORGE_HOUSE_STAB
+                KTECH_ROLE_ONGENET_KICK,
+                KTECH_ROLE_ONGENET_SNARE,
+                KTECH_ROLE_ONGENET_CLAP,
+                KTECH_ROLE_ONGENET_CLOSED_HAT,
+                KTECH_ROLE_ONGENET_OPEN_HAT,
+                KTECH_ROLE_ONGENET_RIDE,
+                KTECH_ROLE_SF2_JNS_SYNTH_BASS,
+                KTECH_ROLE_VCSL_STRUMSTICK
             };
             current->role = instruments[track];
             current->length = track == 6u ? 16u :
