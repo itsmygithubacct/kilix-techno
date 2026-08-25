@@ -69,6 +69,9 @@ unsigned ktech_editor_apply(ktech_editor *editor, ktech_action action,
                             kittyin_action_phase phase);
 bool ktech_editor_select_step(ktech_editor *editor, uint8_t track,
                               uint8_t step, bool toggle);
+bool ktech_editor_set_step_enabled(ktech_editor *editor, uint8_t track,
+                                   uint8_t step, bool enabled);
+bool ktech_editor_select_track(ktech_editor *editor, uint8_t track);
 bool ktech_editor_select_scene(ktech_editor *editor, uint8_t scene);
 void ktech_editor_mark_saved(ktech_editor *editor);
 bool ktech_editor_dirty(const ktech_editor *editor);

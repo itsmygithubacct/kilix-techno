@@ -486,6 +486,23 @@ static void test_editor_history(void)
     CHECK(ktech_editor_select_step(editor, 3u, 2u, true));
     CHECK(ktech_editor_track(editor) == 3u && ktech_editor_step(editor) == 2u);
     CHECK(ktech_editor_dirty(editor));
+    CHECK(ktech_editor_set_step_enabled(editor, 3u, 3u, true));
+    CHECK(ktech_editor_project(editor)->scenes[0].tracks[3].steps[3].enabled ==
+          1u);
+    uint64_t enabled_revision = ktech_editor_revision(editor);
+    CHECK(ktech_editor_set_step_enabled(editor, 3u, 3u, false));
+    CHECK(ktech_editor_project(editor)->scenes[0].tracks[3].steps[3].enabled ==
+          0u);
+    CHECK(ktech_editor_revision(editor) > enabled_revision);
+    uint64_t cleared_revision = ktech_editor_revision(editor);
+    CHECK(ktech_editor_set_step_enabled(editor, 3u, 3u, false));
+    CHECK(ktech_editor_revision(editor) == cleared_revision);
+    CHECK(!ktech_editor_set_step_enabled(editor, 3u, KTECH_STEP_COUNT,
+                                         false));
+    CHECK(ktech_editor_select_track(editor, 4u));
+    CHECK(!ktech_editor_select_track(editor, 4u));
+    CHECK(ktech_editor_select_track(editor, 3u));
+    CHECK(!ktech_editor_select_track(editor, KTECH_TRACK_COUNT));
     CHECK(ktech_editor_apply(editor, KTECH_ACTION_INCREASE,
                              KITTYIN_ACTION_RELEASE) == KTECH_EFFECT_NONE);
     CHECK(ktech_project_validate(ktech_editor_project(editor), NULL, 0u));
@@ -808,6 +825,12 @@ static void test_ui_models(void)
                                 &track, &step));
         CHECK(track == 0u && step == 0u);
         CHECK(!ktech_ui_hit_step(&layout, 0, 0, &track, &step));
+        CHECK(ktech_ui_hit_track(&layout, layout.grid_x / 2,
+                                 layout.grid_y + layout.row_height * 3 + 2,
+                                 &track));
+        CHECK(track == 3u);
+        CHECK(!ktech_ui_hit_track(&layout, layout.grid_x + 1,
+                                  layout.grid_y, &track));
         uint8_t scene_number;
         int scene_button = layout.scene_width / (int)KTECH_SCENE_COUNT;
         CHECK(ktech_ui_hit_scene(&layout,

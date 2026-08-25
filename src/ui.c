@@ -566,7 +566,7 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
                            (unsigned long long)audio->transport.sink_failures);
         } else {
             (void)snprintf(status, sizeof status,
-                           "BANKS %u/%u %s | SPACE PLAY | ? HELP",
+                           "BANKS %u/%u %s | L STEP | R CLEAR | ?",
                            audio ? audio->soundbank_count : 0u,
                            KTECH_SAMPLE_BANK_COUNT,
                            audio && audio->soundbank_count ==
@@ -583,7 +583,8 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
               message && message[0] ? message : status,
               message && message[0] ? COLOR_YELLOW : COLOR_DIM);
     if (canvas->w >= 860 && (!message || !message[0])) {
-        const char *hint = "SPACE PLAY  ENTER STEP  +/- VALUE  ? HELP";
+        const char *hint =
+            "L-CLICK STEP  R-CLICK CLEAR  WHEEL VALUE  ? HELP";
         int hint_x = canvas->w - text_width(hint) - 14;
         sr_fill_rect(canvas, (float)hint_x - 8.0f, (float)footer_y,
                      (float)canvas->w - (float)hint_x + 8.0f, 32.0f,
@@ -595,7 +596,7 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
         sr_fill_rect(canvas, 0.0f, 0.0f, (float)canvas->w,
                      (float)canvas->h, COLOR_BG, 0.82f);
         int box_width = canvas->w >= 760 ? 720 : canvas->w - 24;
-        int box_height = canvas->h >= 400 ? 300 : canvas->h - 20;
+        int box_height = canvas->h >= 400 ? 360 : canvas->h - 20;
         int x = (canvas->w - box_width) / 2;
         int y = (canvas->h - box_height) / 2;
         sr_fill_rect(canvas, (float)x, (float)y, (float)box_width,
@@ -606,21 +607,24 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
         draw_text(canvas, x + 102, y + 16,
                   "KEYBOARD FIRST / MOUSE FRIENDLY", COLOR_DIM);
         const char *keys[] = {
-            "ARROWS", "ENTER / CLICK", "+ / - / WHEEL", "SPACE",
-            ". / CTRL+SPACE", "TAB / [ ]", "M / S", ", / >",
-            "L", "T", "CTRL+Z / Y", "CTRL+S / E", "? / Q"
+            "ARROWS", "ENTER", "L-CLICK STEP", "R-CLICK STEP",
+            "+ / - / WHEEL", "SPACE", ". / CTRL+SPACE",
+            "TAB/[ ]/L-TRK", "R-CLICK TRACK", "M / S", ", / >",
+            "L-CLICK SCENE", "R-CLICK SCENE", "T", "CTRL+Z / Y",
+            "CTRL+S / E", "? / Q"
         };
         const char *descriptions[] = {
-            "MOVE STEP / CHOOSE FIELD", "TOGGLE STEP",
-            "EDIT FOCUSED VALUE", "PLAY / PAUSE", "STOP / RESTART",
-            "CHANGE TRACK", "MUTE / SOLO", "CHOOSE SCENE",
-            "LAUNCH SELECTED SCENE", "TAP TEMPO", "UNDO / REDO",
+            "MOVE STEP / CHOOSE FIELD", "TOGGLE STEP", "TOGGLE STEP",
+            "CLEAR STEP", "EDIT FOCUSED VALUE", "PLAY / PAUSE",
+            "STOP / RESTART", "CHANGE TRACK", "MUTE TRACK",
+            "MUTE / SOLO", "CHOOSE SCENE", "SELECT SCENE",
+            "LAUNCH SCENE", "TAP TEMPO", "UNDO / REDO",
             "SAVE / EXPORT", "HELP / GUARDED QUIT"
         };
         size_t count = sizeof keys / sizeof keys[0];
         int columns = box_width >= 600 ? 2 : 1;
         int rows = ((int)count + columns - 1) / columns;
-        int row_height = columns == 2 ? 30 : 16;
+        int row_height = columns == 2 ? 30 : 14;
         int column_width = (box_width - 36) / columns;
         for (size_t index = 0u; index < count; ++index) {
             int column = (int)index / rows;
@@ -641,7 +645,7 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
             }
         }
         draw_text(canvas, x + 18, y + box_height - 24,
-                  "CLICK A SCENE TO SELECT IT; PRESS L TO LAUNCH",
+                  "LEFT SELECTS OR TOGGLES; RIGHT CLEARS OR ACTS",
                   COLOR_YELLOW);
     }
 }
@@ -663,6 +667,19 @@ bool ktech_ui_hit_step(const ktech_ui_layout *layout, int x, int y,
         return false;
     if (track) *track = (uint8_t)found_track;
     if (step) *step = (uint8_t)found_step;
+    return true;
+}
+
+bool ktech_ui_hit_track(const ktech_ui_layout *layout, int x, int y,
+                        uint8_t *track)
+{
+    if (!layout || x < 6 || x >= layout->grid_x || y < layout->grid_y ||
+        y >= layout->grid_y + layout->row_height * layout->track_rows)
+        return false;
+    int found = layout->track_start +
+                (y - layout->grid_y) / layout->row_height;
+    if (found < 0 || found >= (int)KTECH_TRACK_COUNT) return false;
+    if (track) *track = (uint8_t)found;
     return true;
 }
 

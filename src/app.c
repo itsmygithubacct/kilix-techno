@@ -362,6 +362,61 @@ static void dispatch_key(app_state *app, const ktech_cli_options *cli,
         dispatch_action(app, cli, &actions[index]);
 }
 
+enum {
+    KTECH_MOUSE_LEFT = 1u,
+    KTECH_MOUSE_RIGHT = 3u
+};
+
+static bool pointer_step(app_state *app, uint8_t track, uint8_t step,
+                         uint8_t button)
+{
+    if (!app || (button != KTECH_MOUSE_LEFT &&
+                 button != KTECH_MOUSE_RIGHT))
+        return false;
+    uint64_t revision = ktech_editor_revision(app->editor);
+    bool valid = button == KTECH_MOUSE_LEFT ?
+        ktech_editor_select_step(app->editor, track, step, true) :
+        ktech_editor_set_step_enabled(app->editor, track, step, false);
+    if (valid && ktech_editor_revision(app->editor) != revision)
+        request_publication(app, false);
+    return valid;
+}
+
+static void pointer_track(app_state *app, const ktech_cli_options *cli,
+                          uint8_t track, uint8_t button)
+{
+    if (!app || (button != KTECH_MOUSE_LEFT &&
+                 button != KTECH_MOUSE_RIGHT))
+        return;
+    (void)ktech_editor_select_track(app->editor, track);
+    if (button == KTECH_MOUSE_RIGHT) {
+        kittyin_action_event action = {
+            KTECH_ACTION_MUTE, KITTYIN_ACTION_PRESS,
+            KITTYIN_DEVICE_KEYBOARD, 0u
+        };
+        dispatch_action(app, cli, &action);
+    }
+}
+
+static void pointer_scene(app_state *app, const ktech_cli_options *cli,
+                          uint8_t scene, uint8_t button)
+{
+    if (!app || (button != KTECH_MOUSE_LEFT &&
+                 button != KTECH_MOUSE_RIGHT))
+        return;
+    (void)ktech_editor_select_scene(app->editor, scene);
+    if (button == KTECH_MOUSE_RIGHT) {
+        set_message(app, "Scene launch requested");
+        kittyin_action_event action = {
+            KTECH_ACTION_LAUNCH_SCENE, KITTYIN_ACTION_PRESS,
+            KITTYIN_DEVICE_KEYBOARD, 0u
+        };
+        dispatch_action(app, cli, &action);
+    } else {
+        set_message(app, "Scene selected; right-click or press L to launch");
+    }
+}
+
 static void poll_gamepads(app_state *app, const ktech_cli_options *cli,
                           uint32_t elapsed_ms)
 {
@@ -453,15 +508,14 @@ static void handle_pixel_event(app_state *app, const ktech_cli_options *cli,
             ktech_ui_layout_make(&layout, kittyts_width(session),
                                   kittyts_height(session), app->editor);
             uint8_t track, step;
-            if (ktech_ui_hit_step(&layout, x, y, &track, &step) &&
-                ktech_editor_select_step(app->editor, track, step, true)) {
-                request_publication(app, false);
+            if (ktech_ui_hit_step(&layout, x, y, &track, &step)) {
+                (void)pointer_step(app, track, step, mouse->button);
+            } else if (ktech_ui_hit_track(&layout, x, y, &track)) {
+                pointer_track(app, cli, track, mouse->button);
             } else {
                 uint8_t scene;
-                if (ktech_ui_hit_scene(&layout, x, y, &scene) &&
-                    ktech_editor_select_scene(app->editor, scene))
-                    set_message(app,
-                                "Scene selected; press L to launch it");
+                if (ktech_ui_hit_scene(&layout, x, y, &scene))
+                    pointer_scene(app, cli, scene, mouse->button);
             }
         }
     } else if (event->kind == KITTYIN_EVENT_FOCUS &&
@@ -614,15 +668,29 @@ static void handle_cell_mouse(app_state *app, const ktech_cli_options *cli,
     }
     if (mouse->action != KITTYIN_MOUSE_PRESS || mouse->pixel_coordinates)
         return;
+    if (mouse->button != KTECH_MOUSE_LEFT &&
+        mouse->button != KTECH_MOUSE_RIGHT)
+        return;
     int visible = columns >= 100 ? 16 : columns >= 72 ? 12 : 8;
-    int row = mouse->y - 3;
-    int column = (mouse->x - 14) / 3;
+    int label_width = columns >= 100 ? 19 : columns >= 72 ? 14 : 11;
+    int row = mouse->y - 2;
     if (row >= 0 && row < (int)KTECH_TRACK_COUNT &&
-        column >= 0 && column < visible) {
+        mouse->x >= 0 && mouse->x < label_width) {
+        pointer_track(app, cli, (uint8_t)row, mouse->button);
+        return;
+    }
+    int column = (mouse->x - label_width) / 3;
+    if (row >= 0 && row < (int)KTECH_TRACK_COUNT &&
+        mouse->x >= label_width && column >= 0 && column < visible) {
         int page = ktech_editor_step(app->editor) / visible * visible;
-        if (ktech_editor_select_step(app->editor, (uint8_t)row,
-                                     (uint8_t)(page + column), true))
-            request_publication(app, false);
+        (void)pointer_step(app, (uint8_t)row,
+                           (uint8_t)(page + column), mouse->button);
+        return;
+    }
+    if (columns >= 100 && mouse->y == 13 && mouse->x >= 7 &&
+        mouse->x < 7 + (int)KTECH_SCENE_COUNT * 4) {
+        uint8_t scene = (uint8_t)((mouse->x - 7) / 4);
+        pointer_scene(app, cli, scene, mouse->button);
     }
 }
 

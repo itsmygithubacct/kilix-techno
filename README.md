@@ -57,9 +57,9 @@ build/kilix-techno --export "$PWD/set.ktech" "$PWD/set.wav" --bars 8
 - `,` and `>` choose a scene; `L` launches it at the project's selected
   step, beat, or four-beat boundary.
 - `Q` requests quit and asks again when the project has unsaved changes.
-- Mouse clicks toggle grid steps or select scenes, and the wheel edits the
-  focused value. Scene selection is intentionally separate from `L` launch so
-  a click cannot interrupt a live set.
+- Left-click toggles grid steps, selects track labels, or selects scenes.
+  Right-click clears a step, mutes a track from its label, or launches a scene.
+  The wheel edits the focused value. Middle-click is intentionally ignored.
 
 The status line always reports the selected audio backend or the usable
 no-audio state and the installed-bank count. Project editing and export do not

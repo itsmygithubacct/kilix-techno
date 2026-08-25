@@ -344,6 +344,32 @@ bool ktech_editor_select_step(ktech_editor *editor, uint8_t track,
     return true;
 }
 
+bool ktech_editor_set_step_enabled(ktech_editor *editor, uint8_t track,
+                                   uint8_t step, bool enabled)
+{
+    if (!editor || track >= KTECH_TRACK_COUNT) return false;
+    ktech_track *selected = &editor->project.scenes[editor->scene].tracks[track];
+    if (step >= selected->length) return false;
+    editor->track = track;
+    editor->step = step;
+    uint8_t canonical = enabled ? 1u : 0u;
+    if (selected->steps[step].enabled == canonical) return true;
+    begin_change(editor);
+    selected->steps[step].enabled = canonical;
+    (void)finish_change(editor, 0u);
+    return true;
+}
+
+bool ktech_editor_select_track(ktech_editor *editor, uint8_t track)
+{
+    if (!editor || track >= KTECH_TRACK_COUNT || editor->track == track)
+        return false;
+    editor->track = track;
+    if (editor->step >= selected_track(editor)->length)
+        editor->step = (uint8_t)(selected_track(editor)->length - 1u);
+    return true;
+}
+
 bool ktech_editor_select_scene(ktech_editor *editor, uint8_t scene)
 {
     if (!editor || scene >= KTECH_SCENE_COUNT || editor->scene == scene)

@@ -217,11 +217,11 @@ size_t ktech_cell_render(char *output, size_t capacity, int columns,
         append(&writer, " | QERR %llu SINKERR %llu",
                (unsigned long long)audio->queue_failures,
                (unsigned long long)audio->transport.sink_failures);
-    append(&writer, "\nKEYS  arrows move/field  Enter toggle  +/- edit  Space play  ? help  Q quit\n");
+    append(&writer, "\nKEYS  L-click toggle  R-click clear  wheel edit  Space play  ? help  Q quit\n");
     if (message && message[0]) append(&writer, "STATUS %s\n", message);
     if (ktech_editor_help_visible(editor)) {
         append(&writer,
-               "HELP  Tab/[ ] track | M/S mute/solo | . stop | Ctrl+Space restart | T tap | ,/> scene | L launch | Ctrl+Z/Y undo/redo | Ctrl+S save | Ctrl+E export\n");
+               "HELP  L-track select/R-track mute | L-scene select/R-scene launch | Tab/[ ] track | M/S mute/solo | . stop | Ctrl+Space restart | T tap | Ctrl+Z/Y undo/redo | Ctrl+S save | Ctrl+E export\n");
     }
     if (capacity > 0u) {
         size_t end = writer.used < capacity ? writer.used : capacity - 1u;

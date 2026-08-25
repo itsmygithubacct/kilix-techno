@@ -35,6 +35,8 @@ void ktech_ui_render(sr_canvas *canvas, const ktech_editor *editor,
                      const ktech_audio_status *audio, const char *message);
 bool ktech_ui_hit_step(const ktech_ui_layout *layout, int x, int y,
                        uint8_t *track, uint8_t *step);
+bool ktech_ui_hit_track(const ktech_ui_layout *layout, int x, int y,
+                        uint8_t *track);
 bool ktech_ui_hit_scene(const ktech_ui_layout *layout, int x, int y,
                         uint8_t *scene);
 
