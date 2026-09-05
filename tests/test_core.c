@@ -386,6 +386,31 @@ static void test_project_files(void)
               directory, recovery, sizeof recovery) == KTECH_PROJECT_OK);
     CHECK(access(autosave, F_OK) != 0 && errno == ENOENT);
     CHECK(access(recovery, F_OK) == 0);
+
+    /* Named session slots live beside the shared autosave.state and never
+     * touch it; the store rejects a slot name that is a path. */
+    static const char slot[] = "autosave.session-1-2.state";
+    char slot_path[512];
+    CHECK(ktech_project_save_autosave_slot(&original, directory, slot) ==
+          KTECH_PROJECT_OK);
+    memset(&loaded, 0, sizeof loaded);
+    CHECK(ktech_project_load_autosave_slot(&loaded, directory, slot) ==
+          KTECH_PROJECT_OK);
+    CHECK(memcmp(&original, &loaded, sizeof original) == 0);
+    CHECK(ktech_project_autosave_slot_path(directory, slot, slot_path,
+                                           sizeof slot_path) ==
+          KTECH_PROJECT_OK);
+    CHECK(access(slot_path, F_OK) == 0);
+    CHECK(access(autosave, F_OK) != 0 && errno == ENOENT);
+    CHECK(ktech_project_save_autosave_slot(&original, directory,
+                                           "../escape.state") !=
+          KTECH_PROJECT_OK);
+    CHECK(ktech_project_save_autosave_slot(&original, directory,
+                                           "sub/slot.state") !=
+          KTECH_PROJECT_OK);
+    CHECK(ktech_project_remove_autosave_slot(directory, slot) ==
+          KTECH_PROJECT_OK);
+    CHECK(access(slot_path, F_OK) != 0 && errno == ENOENT);
     CHECK(unlink(path) == 0);
     CHECK(unlink(midi_path) == 0);
     CHECK(unlink(recovery) == 0);

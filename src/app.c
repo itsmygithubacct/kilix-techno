@@ -60,6 +60,16 @@ typedef struct app_state {
     bool exit_requested;
     bool settings_write_allowed;
     bool autosave_write_allowed;
+    /* Whether this session may write the shared autosave.state. A session
+     * that loaded it, or found it absent, owns it. Any other session autosaves
+     * to session_slot and may replace the shared slot only by a deliberate
+     * second Ctrl+S; before this rule every session's first edit overwrote
+     * whatever the previous session had saved there, after two seconds and
+     * with no prompt. */
+    bool autosave_owner;
+    bool autosave_claim_pending;
+    bool session_slot_written;
+    char session_slot[64];
     bool scene_launch_deferred;
     uint8_t deferred_scene;
     uint8_t deferred_boundary;
@@ -152,17 +162,35 @@ static void save_project(app_state *app, bool explicit_save)
 {
     const ktech_project *project = ktech_editor_project_const(app->editor);
     ktech_project_result result;
+    bool claimed = false;
     if (app->project_path[0] != '\0') {
         result = ktech_project_save(project, app->project_path, true);
-    } else {
+    } else if (app->autosave_owner) {
         result = ktech_project_save_autosave(project, NULL);
+    } else if (app->autosave_claim_pending) {
+        result = ktech_project_save_autosave(project, NULL);
+        claimed = result == KTECH_PROJECT_OK;
+    } else {
+        app->autosave_claim_pending = true;
+        set_message(app, "Autosave holds another project: "
+                         "press Ctrl+S again to replace it");
+        return;
     }
     if (result == KTECH_PROJECT_OK) {
+        if (claimed) {
+            app->autosave_owner = true;
+            app->autosave_claim_pending = false;
+            if (app->session_slot_written)
+                (void)ktech_project_remove_autosave_slot(NULL,
+                                                         app->session_slot);
+            app->session_slot_written = false;
+        }
         if (explicit_save) ktech_editor_mark_saved(app->editor);
         if (explicit_save) app->autosave_write_allowed = true;
         app->autosaved_revision = ktech_editor_revision(app->editor);
         set_message(app, app->project_path[0] ? "Project saved" :
-                                                 "Project saved to autosave");
+                    claimed ? "Project saved to autosave, replacing the previous one" :
+                              "Project saved to autosave");
     } else {
         char message[160];
         (void)snprintf(message, sizeof message, "Save failed: %s",
@@ -174,10 +202,13 @@ static void save_project(app_state *app, bool explicit_save)
 static void save_autosave(app_state *app)
 {
     if (!app->autosave_write_allowed) return;
-    ktech_project_result result = ktech_project_save_autosave(
-        ktech_editor_project_const(app->editor), NULL);
+    const ktech_project *project = ktech_editor_project_const(app->editor);
+    ktech_project_result result = app->autosave_owner ?
+        ktech_project_save_autosave(project, NULL) :
+        ktech_project_save_autosave_slot(project, NULL, app->session_slot);
     if (result == KTECH_PROJECT_OK) {
         app->autosaved_revision = ktech_editor_revision(app->editor);
+        if (!app->autosave_owner) app->session_slot_written = true;
     } else {
         char message[160];
         (void)snprintf(message, sizeof message, "Autosave failed: %s",
@@ -304,6 +335,7 @@ static void apply_effect(app_state *app, unsigned effect,
     }
     if ((effect & KTECH_EFFECT_PROJECT_CHANGED) != 0u) {
         app->quit_guard = false;
+        app->autosave_claim_pending = false;
         request_publication(app, false);
     }
     if ((effect & KTECH_EFFECT_SCENE_LAUNCH) != 0u) {
@@ -353,7 +385,15 @@ static void apply_effect(app_state *app, unsigned effect,
         }
         if (ktech_editor_dirty(app->editor) && !app->quit_guard) {
             app->quit_guard = true;
-            set_message(app, "Unsaved changes: press Q again to save autosave and quit");
+            if (app->autosave_owner) {
+                set_message(app, "Unsaved changes: press Q again to save autosave and quit");
+            } else {
+                char message[160];
+                (void)snprintf(message, sizeof message,
+                               "Unsaved changes: press Q again to quit; "
+                               "they stay in %s", app->session_slot);
+                set_message(app, message);
+            }
         } else {
             app->exit_requested = true;
         }
@@ -1723,6 +1763,20 @@ int ktech_app_run(const ktech_cli_options *options)
     app.settings_write_allowed = settings_result == KTECH_SETTINGS_OK ||
                                  settings_result == KTECH_SETTINGS_NOT_FOUND;
     app.autosave_write_allowed = autosave_write_allowed;
+    app.autosave_owner = true;
+    app.autosave_claim_pending = false;
+    app.session_slot_written = false;
+    (void)snprintf(app.session_slot, sizeof app.session_slot,
+                   "autosave.session-%lld-%ld.state",
+                   (long long)time(NULL), (long)getpid());
+    if (strcmp(description, "autosave") != 0 && autosave_write_allowed) {
+        char shared[4096];
+        struct stat shared_status;
+        if (ktech_project_autosave_path(NULL, shared, sizeof shared) ==
+                KTECH_PROJECT_OK &&
+            lstat(shared, &shared_status) == 0)
+            app.autosave_owner = false;
+    }
     if (settings_result == KTECH_SETTINGS_NOT_FOUND)
         ktech_settings_init(&app.settings);
     if (strcmp(description, "new") == 0 &&
@@ -1746,7 +1800,15 @@ int ktech_app_run(const ktech_cli_options *options)
     app.published_revision = ktech_editor_revision(app.editor);
     app.autosaved_revision = app.published_revision;
     app.last_autosave_ms = monotonic_milliseconds();
-    if (recovery_warning[0]) set_message(&app, recovery_warning);
+    if (recovery_warning[0]) {
+        set_message(&app, recovery_warning);
+    } else if (!app.autosave_owner) {
+        char notice[160];
+        (void)snprintf(notice, sizeof notice,
+                       "Autosave holds another project; this session "
+                       "autosaves to %s", app.session_slot);
+        set_message(&app, notice);
+    }
     if (!app.settings_write_allowed) {
         char path[4096];
         if (ktech_settings_path(NULL, path, sizeof path) == KTECH_SETTINGS_OK) {
@@ -1774,6 +1836,9 @@ int ktech_app_run(const ktech_cli_options *options)
     if (result < 0 && !signal_exit) result = run_cell(&app, options);
 
     if (ktech_editor_dirty(app.editor)) save_autosave(&app);
+    if (!app.autosave_owner && app.session_slot_written &&
+        !ktech_editor_dirty(app.editor))
+        (void)ktech_project_remove_autosave_slot(NULL, app.session_slot);
     cancel_export(&app);
     if (app.settings_write_allowed &&
         ktech_settings_from_action_map(

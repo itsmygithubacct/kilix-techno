@@ -390,6 +390,19 @@ ktech_project_result ktech_project_remove_autosave(
     const char *base_directory);
 ktech_project_result ktech_project_autosave_path(
     const char *base_directory, char *path, size_t path_size);
+/* Named sibling slots beside autosave.state for sessions that must not write
+ * the shared slot. `slot` is a bare file name in the same directory and is
+ * validated by the store; a path never reaches the filesystem. */
+ktech_project_result ktech_project_save_autosave_slot(
+    const ktech_project *project, const char *base_directory,
+    const char *slot);
+ktech_project_result ktech_project_load_autosave_slot(
+    ktech_project *project, const char *base_directory, const char *slot);
+ktech_project_result ktech_project_remove_autosave_slot(
+    const char *base_directory, const char *slot);
+ktech_project_result ktech_project_autosave_slot_path(
+    const char *base_directory, const char *slot, char *path,
+    size_t path_size);
 /* Move a damaged autosave to the fixed diagnostic sibling
  * autosave.corrupt.state. Existing diagnostic bytes are never replaced. */
 ktech_project_result ktech_project_quarantine_autosave(

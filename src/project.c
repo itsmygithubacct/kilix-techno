@@ -1090,11 +1090,11 @@ ktech_project_result ktech_project_load(ktech_project *project,
 }
 
 static void autosave_options(kilixstate_options *options,
-                             const char *base_directory)
+                             const char *base_directory, const char *slot)
 {
     kilixstate_options_init(options);
     options->app_id = "kilix-techno";
-    options->filename = "autosave.state";
+    options->filename = slot;
     options->base_directory = base_directory;
     options->max_payload = KTECH_PROJECT_MAX_BYTES;
     options->format = KILIXSTATE_FORMAT_CRC32;
@@ -1104,7 +1104,7 @@ ktech_project_result ktech_project_save_autosave(
     const ktech_project *project, const char *base_directory)
 {
     kilixstate_options options;
-    autosave_options(&options, base_directory);
+    autosave_options(&options, base_directory, "autosave.state");
     return save_store(project, &options);
 }
 
@@ -1112,7 +1112,7 @@ ktech_project_result ktech_project_load_autosave(
     ktech_project *project, const char *base_directory)
 {
     kilixstate_options options;
-    autosave_options(&options, base_directory);
+    autosave_options(&options, base_directory, "autosave.state");
     return load_store(project, &options);
 }
 
@@ -1120,7 +1120,7 @@ ktech_project_result ktech_project_remove_autosave(
     const char *base_directory)
 {
     kilixstate_options options;
-    autosave_options(&options, base_directory);
+    autosave_options(&options, base_directory, "autosave.state");
     kilixstate_store store;
     kilixstate_result result = kilixstate_store_init(&store, &options);
     if (result != KILIXSTATE_OK) return from_store_result(result);
@@ -1134,7 +1134,52 @@ ktech_project_result ktech_project_autosave_path(
     const char *base_directory, char *path, size_t path_size)
 {
     kilixstate_options options;
-    autosave_options(&options, base_directory);
+    autosave_options(&options, base_directory, "autosave.state");
+    kilixstate_store store;
+    kilixstate_result result = kilixstate_store_init(&store, &options);
+    if (result != KILIXSTATE_OK) return from_store_result(result);
+    result = kilixstate_store_path(&store, path, path_size);
+    kilixstate_store_close(&store);
+    return from_store_result(result);
+}
+
+ktech_project_result ktech_project_save_autosave_slot(
+    const ktech_project *project, const char *base_directory,
+    const char *slot)
+{
+    kilixstate_options options;
+    autosave_options(&options, base_directory, slot);
+    return save_store(project, &options);
+}
+
+ktech_project_result ktech_project_load_autosave_slot(
+    ktech_project *project, const char *base_directory, const char *slot)
+{
+    kilixstate_options options;
+    autosave_options(&options, base_directory, slot);
+    return load_store(project, &options);
+}
+
+ktech_project_result ktech_project_remove_autosave_slot(
+    const char *base_directory, const char *slot)
+{
+    kilixstate_options options;
+    autosave_options(&options, base_directory, slot);
+    kilixstate_store store;
+    kilixstate_result result = kilixstate_store_init(&store, &options);
+    if (result != KILIXSTATE_OK) return from_store_result(result);
+    result = kilixstate_remove(&store);
+    kilixstate_store_close(&store);
+    return result == KILIXSTATE_NOT_FOUND ? KTECH_PROJECT_OK :
+                                           from_store_result(result);
+}
+
+ktech_project_result ktech_project_autosave_slot_path(
+    const char *base_directory, const char *slot, char *path,
+    size_t path_size)
+{
+    kilixstate_options options;
+    autosave_options(&options, base_directory, slot);
     kilixstate_store store;
     kilixstate_result result = kilixstate_store_init(&store, &options);
     if (result != KILIXSTATE_OK) return from_store_result(result);
@@ -1148,7 +1193,7 @@ ktech_project_result ktech_project_quarantine_autosave(
 {
     static const char diagnostic[] = "autosave.corrupt.state";
     kilixstate_options options;
-    autosave_options(&options, base_directory);
+    autosave_options(&options, base_directory, "autosave.state");
     kilixstate_store store;
     kilixstate_result stored = kilixstate_store_init(&store, &options);
     if (stored != KILIXSTATE_OK) return from_store_result(stored);

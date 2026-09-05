@@ -106,6 +106,15 @@ autosave is moved to `autosave.corrupt.state` when that diagnostic name is
 available; otherwise its original bytes remain untouched and the UI reports
 the exact path.
 
+`autosave.state` is shared by every launch, so it belongs to the session that
+loaded it (a launch with neither `--new` nor `--open`) or to the first session
+to find it absent. A `--new` or `--open` session started while it holds a
+project never writes it: that session autosaves to its own
+`autosave.session-<time>-<pid>.state` beside it and the status line says so,
+`Ctrl+S` asks for a second press before replacing the shared slot, and `Q` `Q`
+quits leaving the unsaved changes in the session slot. A session slot is
+removed when its session exits with nothing unsaved.
+
 `settings.state` stores canonical semantic binding defaults—never device paths
 or commands—and reduced-motion preference below the normal XDG data directory.
 Those defaults seed new projects; opened projects retain their own safe
