@@ -74,5 +74,56 @@ test "$(cksum <"$shared")" != "$first"
 grep -Fq 'replacing the previous one' "$scratch/own-4.log"
 test "$(ls "$own/kilix-techno"/autosave.session-*.state | wc -l)" -eq 2
 XDG_DATA_HOME=$own "$binary" --headless | grep -q '^project=autosave$'
+# The owner mark is released when the owner exits.
+test ! -e "$own/kilix-techno/autosave.owner"
+
+# A claim is a pending decision that an edit cancels: toggle, Ctrl+S (asks),
+# toggle again, Ctrl+S (asks again, does not replace), quit.
+before5=$(cksum <"$shared")
+(sleep 1; printf '\r+++'; sleep 1; printf '\023'; sleep 1; printf '\r'; sleep 1; printf '\023'; sleep 1; printf 'q'; sleep 1; printf 'q') |
+    session "$scratch/own-5.log"
+test "$(cksum <"$shared")" = "$before5"
+test "$(grep -c 'press Ctrl+S again to replace it' "$scratch/own-5.log")" -ge 2
+! grep -Fq 'replacing the previous one' "$scratch/own-5.log"
+
+# A guest --open session autosaves to a session slot, then saves its file and
+# exits with nothing unsaved: the slot is removed on the way out.
+before=$(ls "$own/kilix-techno"/autosave.session-*.state | wc -l)
+"$binary" --new --headless --save "$own/song.ktech" >/dev/null
+(sleep 1; printf '\r'; sleep 3; printf '\023'; sleep 1; printf 'q') |
+    XDG_DATA_HOME=$own timeout 15s script -qec \
+        "$binary --open $own/song.ktech --cell --no-audio" /dev/null >"$scratch/own-6.log" 2>&1
+grep -Fq 'Project saved' "$scratch/own-6.log"
+test "$(ls "$own/kilix-techno"/autosave.session-*.state | wc -l)" -eq "$before"
+
+# Ownership is a claim, not a belief. With the shared slot absent, a session
+# still cannot own it while another running process holds the owner mark; a
+# mark left by a dead process is reclaimed.
+mark=$scratch/mark
+mkdir -m 700 -p "$mark/kilix-techno"
+printf '%s\n' "$$" >"$mark/kilix-techno/autosave.owner"
+(sleep 1; printf '\r'; sleep 1; printf '\023'; sleep 1; printf 'q'; sleep 1; printf 'q') |
+    XDG_DATA_HOME=$mark timeout 15s script -qec \
+        "$binary --new --cell --no-audio" /dev/null >"$scratch/mark-1.log" 2>&1
+test ! -e "$mark/kilix-techno/autosave.state"
+grep -Fq 'this session autosaves to autosave.session-' "$scratch/mark-1.log"
+test "$(cat "$mark/kilix-techno/autosave.owner")" = "$$"
+printf '%s\n' 2147483000 >"$mark/kilix-techno/autosave.owner"
+(sleep 1; printf '\r'; sleep 1; printf '\023'; sleep 1; printf 'q') |
+    XDG_DATA_HOME=$mark timeout 15s script -qec \
+        "$binary --new --cell --no-audio" /dev/null >"$scratch/mark-2.log" 2>&1
+test -f "$mark/kilix-techno/autosave.state"
+test ! -e "$mark/kilix-techno/autosave.owner"
+
+# An --open session never owns the shared slot, even when it is absent: its
+# unsaved edit goes to a session slot and the shared slot is not created.
+opened=$scratch/opened
+mkdir -m 700 -p "$opened"
+"$binary" --new --headless --save "$opened/song.ktech" >/dev/null
+(sleep 1; printf '\r'; sleep 3; printf 'q'; sleep 1; printf 'q') |
+    XDG_DATA_HOME=$opened timeout 15s script -qec \
+        "$binary --open $opened/song.ktech --cell --no-audio" /dev/null >"$scratch/opened.log" 2>&1
+test ! -e "$opened/kilix-techno/autosave.state"
+test "$(ls "$opened/kilix-techno"/autosave.session-*.state | wc -l)" -eq 1
 
 echo 'test-terminal: OK'

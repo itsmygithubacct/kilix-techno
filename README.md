@@ -113,7 +113,12 @@ project never writes it: that session autosaves to its own
 `autosave.session-<time>-<pid>.state` beside it and the status line says so,
 `Ctrl+S` asks for a second press before replacing the shared slot, and `Q` `Q`
 quits leaving the unsaved changes in the session slot. A session slot is
-removed when its session exits with nothing unsaved.
+removed when its session exits with nothing unsaved. Ownership is a claim: the
+owner holds `autosave.owner` (its pid, created exclusively) for the life of
+the session, so two sessions that both find the shared slot absent cannot both
+take it, and a mark left behind by a crashed session is reclaimed. A session
+slot uses the same format as `autosave.state`; to resume one, copy it over
+`autosave.state` while no session is running and launch without arguments.
 
 `settings.state` stores canonical semantic binding defaults—never device paths
 or commands—and reduced-motion preference below the normal XDG data directory.

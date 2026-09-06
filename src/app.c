@@ -70,6 +70,11 @@ typedef struct app_state {
     bool autosave_claim_pending;
     bool session_slot_written;
     char session_slot[64];
+    /* Ownership is a claim, not a belief: the owner holds autosave.owner,
+     * created with O_EXCL and holding its pid, for the life of the session.
+     * Two sessions that both find the shared slot absent cannot both own it. */
+    bool autosave_lock_held;
+    char autosave_lock_path[4096];
     bool scene_launch_deferred;
     uint8_t deferred_scene;
     uint8_t deferred_boundary;
@@ -158,6 +163,48 @@ static void set_message(app_state *app, const char *message)
                    message ? message : "");
 }
 
+static bool claim_autosave_lock(app_state *app)
+{
+    if (app->autosave_lock_held) return true;
+    if (app->autosave_lock_path[0] == '\0') return false;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        int fd = open(app->autosave_lock_path,
+                      O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                      0600);
+        if (fd >= 0) {
+            char text[32];
+            int length = snprintf(text, sizeof text, "%ld\n", (long)getpid());
+            if (length > 0) (void)!write(fd, text, (size_t)length);
+            (void)close(fd);
+            app->autosave_lock_held = true;
+            return true;
+        }
+        if (errno != EEXIST) return false;
+        /* A mark whose process is gone is stale; reclaim it once. */
+        long pid = 0;
+        int mark = open(app->autosave_lock_path,
+                        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (mark >= 0) {
+            char text[32] = {0};
+            ssize_t got = read(mark, text, sizeof text - 1u);
+            (void)close(mark);
+            if (got > 0) pid = strtol(text, NULL, 10);
+        }
+        if (pid > 0 && (kill((pid_t)pid, 0) == 0 || errno == EPERM))
+            return false;
+        if (unlink(app->autosave_lock_path) != 0 && errno != ENOENT)
+            return false;
+    }
+    return false;
+}
+
+static void release_autosave_lock(app_state *app)
+{
+    if (!app->autosave_lock_held) return;
+    (void)unlink(app->autosave_lock_path);
+    app->autosave_lock_held = false;
+}
+
 static void save_project(app_state *app, bool explicit_save)
 {
     const ktech_project *project = ktech_editor_project_const(app->editor);
@@ -168,8 +215,15 @@ static void save_project(app_state *app, bool explicit_save)
     } else if (app->autosave_owner) {
         result = ktech_project_save_autosave(project, NULL);
     } else if (app->autosave_claim_pending) {
+        app->autosave_claim_pending = false;
+        if (!claim_autosave_lock(app)) {
+            set_message(app, "Another running session owns the autosave; "
+                             "nothing replaced");
+            return;
+        }
         result = ktech_project_save_autosave(project, NULL);
         claimed = result == KTECH_PROJECT_OK;
+        if (!claimed) release_autosave_lock(app);
     } else {
         app->autosave_claim_pending = true;
         set_message(app, "Autosave holds another project: "
@@ -1766,16 +1820,35 @@ int ktech_app_run(const ktech_cli_options *options)
     app.autosave_owner = true;
     app.autosave_claim_pending = false;
     app.session_slot_written = false;
+    app.autosave_lock_held = false;
+    app.autosave_lock_path[0] = '\0';
     (void)snprintf(app.session_slot, sizeof app.session_slot,
                    "autosave.session-%lld-%ld.state",
                    (long long)time(NULL), (long)getpid());
-    if (strcmp(description, "autosave") != 0 && autosave_write_allowed) {
+    if (autosave_write_allowed) {
+        /* Own the shared slot only by claiming it: a session that loaded it,
+         * or that found it absent, takes the owner mark; an --open session
+         * has its own file and never owns the shared slot. When the mark is
+         * held by another running session, this one is a guest. */
         char shared[4096];
         struct stat shared_status;
-        if (ktech_project_autosave_path(NULL, shared, sizeof shared) ==
-                KTECH_PROJECT_OK &&
-            lstat(shared, &shared_status) == 0)
-            app.autosave_owner = false;
+        bool candidate = false;
+        if (ktech_project_autosave_slot_path(NULL, "autosave.owner",
+                                             app.autosave_lock_path,
+                                             sizeof app.autosave_lock_path) !=
+            KTECH_PROJECT_OK)
+            app.autosave_lock_path[0] = '\0';
+        if (!options->open_path) {
+            if (strcmp(description, "autosave") == 0) {
+                candidate = true;
+            } else if (ktech_project_autosave_path(NULL, shared,
+                                                   sizeof shared) ==
+                           KTECH_PROJECT_OK &&
+                       lstat(shared, &shared_status) != 0 && errno == ENOENT) {
+                candidate = true;
+            }
+        }
+        app.autosave_owner = candidate && claim_autosave_lock(&app);
     }
     if (settings_result == KTECH_SETTINGS_NOT_FOUND)
         ktech_settings_init(&app.settings);
@@ -1839,6 +1912,7 @@ int ktech_app_run(const ktech_cli_options *options)
     if (!app.autosave_owner && app.session_slot_written &&
         !ktech_editor_dirty(app.editor))
         (void)ktech_project_remove_autosave_slot(NULL, app.session_slot);
+    release_autosave_lock(&app);
     cancel_export(&app);
     if (app.settings_write_allowed &&
         ktech_settings_from_action_map(
