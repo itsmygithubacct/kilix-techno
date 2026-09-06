@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -70,11 +71,14 @@ typedef struct app_state {
     bool autosave_claim_pending;
     bool session_slot_written;
     char session_slot[64];
-    /* Ownership is a claim, not a belief: the owner holds autosave.owner,
-     * created with O_EXCL and holding its pid, for the life of the session.
-     * Two sessions that both find the shared slot absent cannot both own it. */
-    bool autosave_lock_held;
+    /* Ownership is a claim, not a belief: the owner holds an exclusive
+     * flock on autosave.owner for the life of the session. The lock dies with
+     * the process, so a crashed owner leaves nothing to reclaim, and two
+     * sessions that both find the shared slot absent cannot both own it: the
+     * earlier O_EXCL-then-write claim let simultaneous starts both succeed. */
+    int autosave_lock_fd;
     char autosave_lock_path[4096];
+    bool exit_save_failed;
     bool scene_launch_deferred;
     uint8_t deferred_scene;
     uint8_t deferred_boundary;
@@ -165,44 +169,33 @@ static void set_message(app_state *app, const char *message)
 
 static bool claim_autosave_lock(app_state *app)
 {
-    if (app->autosave_lock_held) return true;
+    if (app->autosave_lock_fd >= 0) return true;
     if (app->autosave_lock_path[0] == '\0') return false;
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        int fd = open(app->autosave_lock_path,
-                      O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-                      0600);
-        if (fd >= 0) {
-            char text[32];
-            int length = snprintf(text, sizeof text, "%ld\n", (long)getpid());
-            if (length > 0) (void)!write(fd, text, (size_t)length);
-            (void)close(fd);
-            app->autosave_lock_held = true;
-            return true;
-        }
-        if (errno != EEXIST) return false;
-        /* A mark whose process is gone is stale; reclaim it once. */
-        long pid = 0;
-        int mark = open(app->autosave_lock_path,
-                        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-        if (mark >= 0) {
-            char text[32] = {0};
-            ssize_t got = read(mark, text, sizeof text - 1u);
-            (void)close(mark);
-            if (got > 0) pid = strtol(text, NULL, 10);
-        }
-        if (pid > 0 && (kill((pid_t)pid, 0) == 0 || errno == EPERM))
-            return false;
-        if (unlink(app->autosave_lock_path) != 0 && errno != ENOENT)
-            return false;
+    /* The mark file is never removed; holding its lock is the claim. A
+     * symlink or a directory in its place cannot be opened this way and makes
+     * this session a guest. */
+    int fd = open(app->autosave_lock_path,
+                  O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    if (fd < 0) return false;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        (void)close(fd);
+        return false;
     }
-    return false;
+    char text[32];
+    int length = snprintf(text, sizeof text, "%ld\n", (long)getpid());
+    if (length > 0 && ftruncate(fd, 0) == 0)
+        (void)!write(fd, text, (size_t)length);
+    app->autosave_lock_fd = fd;
+    return true;
 }
 
 static void release_autosave_lock(app_state *app)
 {
-    if (!app->autosave_lock_held) return;
-    (void)unlink(app->autosave_lock_path);
-    app->autosave_lock_held = false;
+    if (app->autosave_lock_fd < 0) return;
+    /* The pid inside is informational; an empty mark reads as unheld. */
+    (void)ftruncate(app->autosave_lock_fd, 0);
+    (void)close(app->autosave_lock_fd);
+    app->autosave_lock_fd = -1;
 }
 
 static void save_project(app_state *app, bool explicit_save)
@@ -263,11 +256,13 @@ static void save_autosave(app_state *app)
     if (result == KTECH_PROJECT_OK) {
         app->autosaved_revision = ktech_editor_revision(app->editor);
         if (!app->autosave_owner) app->session_slot_written = true;
+        app->exit_save_failed = false;
     } else {
         char message[160];
         (void)snprintf(message, sizeof message, "Autosave failed: %s",
                        ktech_project_result_name(result));
         set_message(app, message);
+        app->exit_save_failed = true;
     }
 }
 
@@ -1820,16 +1815,20 @@ int ktech_app_run(const ktech_cli_options *options)
     app.autosave_owner = true;
     app.autosave_claim_pending = false;
     app.session_slot_written = false;
-    app.autosave_lock_held = false;
+    app.autosave_lock_fd = -1;
     app.autosave_lock_path[0] = '\0';
+    app.exit_save_failed = false;
+    bool shared_present = false;
     (void)snprintf(app.session_slot, sizeof app.session_slot,
                    "autosave.session-%lld-%ld.state",
                    (long long)time(NULL), (long)getpid());
-    if (autosave_write_allowed) {
+    {
         /* Own the shared slot only by claiming it: a session that loaded it,
-         * or that found it absent, takes the owner mark; an --open session
-         * has its own file and never owns the shared slot. When the mark is
-         * held by another running session, this one is a guest. */
+         * or that found it absent, takes the owner lock; an --open session
+         * has its own file and never owns the shared slot. When the lock is
+         * held by another running session, this one is a guest. A session
+         * whose corrupt slot could not be quarantined keeps the withheld-write
+         * rule but claims the lock like any other owner. */
         char shared[4096];
         struct stat shared_status;
         bool candidate = false;
@@ -1838,16 +1837,14 @@ int ktech_app_run(const ktech_cli_options *options)
                                              sizeof app.autosave_lock_path) !=
             KTECH_PROJECT_OK)
             app.autosave_lock_path[0] = '\0';
-        if (!options->open_path) {
-            if (strcmp(description, "autosave") == 0) {
-                candidate = true;
-            } else if (ktech_project_autosave_path(NULL, shared,
-                                                   sizeof shared) ==
-                           KTECH_PROJECT_OK &&
-                       lstat(shared, &shared_status) != 0 && errno == ENOENT) {
-                candidate = true;
-            }
-        }
+        shared_present = ktech_project_autosave_path(NULL, shared,
+                                                     sizeof shared) ==
+                             KTECH_PROJECT_OK &&
+                         lstat(shared, &shared_status) == 0;
+        if (!options->open_path &&
+            (strcmp(description, "autosave") == 0 || !shared_present ||
+             !autosave_write_allowed))
+            candidate = true;
         app.autosave_owner = candidate && claim_autosave_lock(&app);
     }
     if (settings_result == KTECH_SETTINGS_NOT_FOUND)
@@ -1878,8 +1875,13 @@ int ktech_app_run(const ktech_cli_options *options)
     } else if (!app.autosave_owner) {
         char notice[160];
         (void)snprintf(notice, sizeof notice,
-                       "Autosave holds another project; this session "
-                       "autosaves to %s", app.session_slot);
+                       "%s; this session autosaves to %s",
+                       shared_present && !options->open_path ?
+                           "Autosave holds another project" :
+                       options->open_path ?
+                           "Opened project" :
+                           "Another running session owns the autosave",
+                       app.session_slot);
         set_message(&app, notice);
     }
     if (!app.settings_write_allowed) {
@@ -1913,6 +1915,9 @@ int ktech_app_run(const ktech_cli_options *options)
         !ktech_editor_dirty(app.editor))
         (void)ktech_project_remove_autosave_slot(NULL, app.session_slot);
     release_autosave_lock(&app);
+    if (app.exit_save_failed && ktech_editor_dirty(app.editor))
+        (void)fprintf(stderr, "%s; unsaved changes were not written\n",
+                      app.message);
     cancel_export(&app);
     if (app.settings_write_allowed &&
         ktech_settings_from_action_map(

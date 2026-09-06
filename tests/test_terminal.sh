@@ -74,8 +74,10 @@ test "$(cksum <"$shared")" != "$first"
 grep -Fq 'replacing the previous one' "$scratch/own-4.log"
 test "$(ls "$own/kilix-techno"/autosave.session-*.state | wc -l)" -eq 2
 XDG_DATA_HOME=$own "$binary" --headless | grep -q '^project=autosave$'
-# The owner mark is released when the owner exits.
-test ! -e "$own/kilix-techno/autosave.owner"
+# The owner lock is released when the owner exits: the mark stays, empty and
+# lockable.
+test ! -s "$own/kilix-techno/autosave.owner"
+flock -n "$own/kilix-techno/autosave.owner" true
 
 # A claim is a pending decision that an edit cancels: toggle, Ctrl+S (asks),
 # toggle again, Ctrl+S (asks again, does not replace), quit.
@@ -97,23 +99,43 @@ grep -Fq 'Project saved' "$scratch/own-6.log"
 test "$(ls "$own/kilix-techno"/autosave.session-*.state | wc -l)" -eq "$before"
 
 # Ownership is a claim, not a belief. With the shared slot absent, a session
-# still cannot own it while another running process holds the owner mark; a
-# mark left by a dead process is reclaimed.
+# still cannot own it while another running process holds the owner lock; a
+# mark nobody holds, whatever it contains, is free.
 mark=$scratch/mark
 mkdir -m 700 -p "$mark/kilix-techno"
-printf '%s\n' "$$" >"$mark/kilix-techno/autosave.owner"
+: >"$mark/kilix-techno/autosave.owner"
+# The holder execs into sleep so that killing it releases the lock; flock(1)
+# with a child would leave the child holding it.
+sh -c 'flock -n 9 || exit 1; exec sleep 30' 9>"$mark/kilix-techno/autosave.owner" &
+holder=$!
+sleep 0.5
 (sleep 1; printf '\r'; sleep 1; printf '\023'; sleep 1; printf 'q'; sleep 1; printf 'q') |
     XDG_DATA_HOME=$mark timeout 15s script -qec \
         "$binary --new --cell --no-audio" /dev/null >"$scratch/mark-1.log" 2>&1
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
 test ! -e "$mark/kilix-techno/autosave.state"
-grep -Fq 'this session autosaves to autosave.session-' "$scratch/mark-1.log"
-test "$(cat "$mark/kilix-techno/autosave.owner")" = "$$"
-printf '%s\n' 2147483000 >"$mark/kilix-techno/autosave.owner"
+grep -Fq 'Another running session owns the autosave' "$scratch/mark-1.log"
+printf '%s\n' garbage >"$mark/kilix-techno/autosave.owner"
 (sleep 1; printf '\r'; sleep 1; printf '\023'; sleep 1; printf 'q') |
     XDG_DATA_HOME=$mark timeout 15s script -qec \
         "$binary --new --cell --no-audio" /dev/null >"$scratch/mark-2.log" 2>&1
 test -f "$mark/kilix-techno/autosave.state"
-test ! -e "$mark/kilix-techno/autosave.owner"
+test ! -s "$mark/kilix-techno/autosave.owner"
+flock -n "$mark/kilix-techno/autosave.owner" true
+
+# A guest's second Ctrl+S takes the lock before replacing the shared slot, and
+# is refused while another running session holds it.
+sh -c 'flock -n 9 || exit 1; exec sleep 30' 9>"$own/kilix-techno/autosave.owner" &
+holder=$!
+sleep 0.5
+before7=$(cksum <"$shared")
+(sleep 1; printf '\r++++'; sleep 1; printf '\023'; sleep 1; printf '\023'; sleep 1; printf 'q'; sleep 1; printf 'q') |
+    session "$scratch/own-7.log"
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+test "$(cksum <"$shared")" = "$before7"
+grep -Fq 'Another running session owns the autosave; nothing replaced' "$scratch/own-7.log"
 
 # An --open session never owns the shared slot, even when it is absent: its
 # unsaved edit goes to a session slot and the shared slot is not created.
